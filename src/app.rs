@@ -1,7 +1,7 @@
 //! Estado do programa, coleta a cada segundo, teclas e ações.
 use crate::collect::gpu::Gpu;
 use crate::collect::procs::Procs;
-use crate::collect::sys::{self, Cpu, Disk, Mem, Net, Zram};
+use crate::collect::sys::{self, Cpu, CpuTemp, Disk, Mem, Net, Zram};
 use crate::ui::draw::R;
 use crate::ui::theme::{GRAY, GREEN, RED};
 use crate::util::{br, errno, fmt_bytes, pyround};
@@ -65,6 +65,7 @@ pub struct OvRow {
 pub struct App {
     pub tab: Tab,
     pub cpu: Cpu,
+    pub cpu_temp: CpuTemp,
     pub cpu_name: String,
     pub mem: Mem,
     pub ram_info: String,
@@ -125,6 +126,7 @@ impl App {
         App {
             tab: Tab::Cpu,
             cpu,
+            cpu_temp: CpuTemp::new(),
             cpu_name: sys::cpu_name(),
             mem,
             ram_info,
@@ -162,6 +164,9 @@ impl App {
     // ───────────── coleta a cada 1 s ─────────────
     pub fn tick(&mut self) {
         self.cpu.sample();
+        if self.tab != Tab::Gpu && self.cpu_temp.ok() {
+            self.cpu_temp.sample();
+        }
         self.mem.sample();
         if self.has_zram {
             self.zram.sample();
@@ -195,14 +200,19 @@ impl App {
         rows.clear();
         let cpu = self.cpu.total;
         let (dot, status) = st(Some(cpu), 70.0, 15.0, PADRAO);
-        let det = if cpu < 15.0 {
-            "Carga baixa de CPU."
+        let mut det = if cpu < 15.0 {
+            "Carga baixa de CPU"
         } else if cpu < 70.0 {
-            "Carga moderada de CPU."
+            "Carga moderada de CPU"
         } else {
-            "CPU bem ocupada."
-        };
-        rows.push(OvRow { comp: "CPU", dot, status, util: format!("{} %", pyround(cpu)), det: det.into() });
+            "CPU bem ocupada"
+        }
+        .to_string();
+        match self.cpu_temp.pkg {
+            Some(t) => det.push_str(&format!(" — {} °C", pyround(t as f64 / 1000.0))),
+            None => det.push('.'),
+        }
+        rows.push(OvRow { comp: "CPU", dot, status, util: format!("{} %", pyround(cpu)), det });
 
         if let Some((nic, rate, speed)) = &self.net.best {
             let util = if *speed > 0 { Some(100.0 * rate * 8.0 / (*speed as f64 * 1e6)) } else { None };
@@ -348,7 +358,7 @@ impl App {
                 self.refresh_procs();
             }
             Tab::Gpu => self.gpu.read_sensors(true, true),
-            Tab::Cpu => {}
+            Tab::Cpu => self.cpu_temp.sample(),
         }
     }
 

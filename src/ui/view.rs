@@ -3,7 +3,7 @@ use crate::app::{App, Sev, Tab, nivel_nome};
 use crate::ui::bigfont::{big, title};
 use crate::ui::draw::{Cv, R, bold, fg, graph, meter, width, wrap};
 use crate::ui::theme::*;
-use crate::util::{br, fmt_bytes, pyround};
+use crate::util::{br, center, fmt_bytes, pyround};
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -75,6 +75,18 @@ fn footer(cv: &mut Cv, r: R) {
 }
 
 // ───────────────────────────── aba 1: CPU e RAM ─────────────────────────────
+/// Cor da temperatura (m°C): verde, laranja a 15 °C do limite, vermelho no limite.
+fn heat(t: i64, high: Option<i64>) -> Color {
+    let high = high.unwrap_or(85_000);
+    if t >= high {
+        RED
+    } else if t >= high - 15_000 {
+        ORANGE
+    } else {
+        GREEN
+    }
+}
+
 type DetLine = (&'static str, String, Style);
 
 fn details(cv: &mut Cv, x: i32, y: i32, lines: &[DetLine]) -> i32 {
@@ -89,8 +101,12 @@ fn details(cv: &mut Cv, x: i32, y: i32, lines: &[DetLine]) -> i32 {
 
 fn tab_cpu(cv: &mut Cv, app: &App, r: R) {
     let mb = |x: u64| format!("{} MB", x >> 20);
+    let temps = app.cpu_temp.ok();
     let rem = r.h - 10;
     let h1 = ((rem + 1) / 2).max(4);
+    // com temperatura por núcleo, o medidor cede uma linha para ela
+    let per_core = temps && app.cpu.ids.iter().any(|id| app.cpu_temp.of_cpu(*id).is_some());
+    let mh = if per_core { (h1 - 1).max(4) } else { h1 };
     let h2 = (rem - h1).max(4);
 
     let mut y = r.y + 1;
@@ -98,14 +114,26 @@ fn tab_cpu(cv: &mut Cv, app: &App, r: R) {
         cv.put(r.x, y, &line, bold(TITLE));
         y += 1;
     }
-    cv.put(r.x, y, &app.cpu_name, fg(SUB));
+    let x = cv.put(r.x, y, &app.cpu_name, fg(SUB));
+    if let Some(t) = app.cpu_temp.pkg {
+        let x = cv.put(x, y, "  ·  ", fg(SUB2));
+        cv.put(x, y, &format!("{} °C", pyround(t as f64 / 1000.0)), bold(heat(t, app.cpu_temp.high)));
+    }
     y += 2;
 
     let n = app.cpu.per.len().max(1) as i32;
     let mw = (r.w / n - 1).clamp(6, 11);
     for (i, v) in app.cpu.per.iter().enumerate() {
-        let mr = R::new(r.x + i as i32 * (mw + 1), y, mw, h1);
+        let mr = R::new(r.x + i as i32 * (mw + 1), y, mw, mh);
         meter(cv, mr, *v, &format!("{} %", pyround(*v)), &format!("CPU {}", i + 1), METER_LIT, METER_OFF, METER_BORDER);
+        if per_core {
+            let t = app.cpu.ids.get(i).and_then(|id| app.cpu_temp.of_cpu(*id));
+            let (txt, st) = match t {
+                Some(t) => (format!("{} °C", pyround(t as f64 / 1000.0)), bold(heat(t, app.cpu_temp.high))),
+                None => ("--".into(), fg(SUB2)),
+            };
+            cv.put(mr.x, y + mh, &center(&txt, mw as usize), st);
+        }
     }
     y += h1 + 1;
 

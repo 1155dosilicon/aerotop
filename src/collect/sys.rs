@@ -8,6 +8,8 @@ use std::time::Instant;
 pub struct Cpu {
     prev: Vec<(u64, u64)>, // (ocupado, total) por núcleo
     pub per: Vec<f64>,
+    /// número de cada CPU lógica de `per` (as desligadas não aparecem no /proc/stat)
+    pub ids: Vec<usize>,
     pub total: f64,
     buf: String,
 }
@@ -23,8 +25,10 @@ impl Cpu {
             if !rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
                 continue; // linha "cpu " agregada
             }
+            let mut toks = rest.split_ascii_whitespace();
+            let id: usize = toks.next().and_then(|v| v.parse().ok()).unwrap_or(i);
             let mut f = [0u64; 8];
-            for (k, tok) in rest.split_ascii_whitespace().skip(1).take(8).enumerate() {
+            for (k, tok) in toks.take(8).enumerate() {
                 f[k] = tok.parse().unwrap_or(0);
             }
             let total: u64 = f.iter().sum();
@@ -32,7 +36,9 @@ impl Cpu {
             if i >= self.prev.len() {
                 self.prev.push((busy, total));
                 self.per.push(0.0);
+                self.ids.push(id);
             } else {
+                self.ids[i] = id;
                 let (pb, pt) = self.prev[i];
                 let dt = total.saturating_sub(pt);
                 self.per[i] = if dt == 0 {
@@ -46,12 +52,159 @@ impl Cpu {
         }
         self.prev.truncate(i);
         self.per.truncate(i);
+        self.ids.truncate(i);
         self.total = if self.per.is_empty() {
             0.0
         } else {
             self.per.iter().sum::<f64>() / self.per.len() as f64
         };
     }
+}
+
+// ───────────────────────────── temperatura da CPU ─────────────────────────────
+/// Sensor de temperatura da CPU, achado no /sys/class/hwmon:
+/// `coretemp` (Intel, com pacote e núcleos), `k10temp`/`zenpower` (AMD),
+/// `cpu_thermal` (ARM) ou, por último, a thermal zone `x86_pkg_temp`.
+#[derive(Default)]
+pub struct CpuTemp {
+    pkg_paths: Vec<String>,
+    core_paths: Vec<String>,
+    /// por número de CPU lógica: índice em `core_paths`
+    cpu_core: Vec<Option<usize>>,
+    /// limite "quente" do sensor, em m°C (temp*_max), se houver
+    pub high: Option<i64>,
+    /// temperatura do pacote (a maior, se houver mais de um soquete), em m°C
+    pub pkg: Option<i64>,
+    core_vals: Vec<Option<i64>>,
+    buf: String,
+}
+
+impl CpuTemp {
+    pub fn new() -> Self {
+        let mut t = CpuTemp::default();
+        let mut hw: Vec<(String, String)> = std::fs::read_dir("/sys/class/hwmon")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path().to_string_lossy().into_owned();
+                let name = std::fs::read_to_string(format!("{p}/name")).ok()?;
+                Some((name.trim().to_string(), p))
+            })
+            .collect();
+        hw.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // Intel coretemp: um hwmon por soquete, com "Package id N" e "Core K"
+        let mut cores: HashMap<(i64, i64), usize> = HashMap::new();
+        for (_, h) in hw.iter().filter(|(n, _)| n == "coretemp") {
+            let mut pkg_id = None;
+            let mut local: Vec<(i64, String)> = Vec::new();
+            for (label, input) in temp_inputs(h) {
+                if let Some(v) = label.strip_prefix("Package id ") {
+                    pkg_id = v.trim().parse().ok();
+                    t.pkg_paths.push(input.clone());
+                    t.read_high(&input);
+                } else if let Some(v) = label.strip_prefix("Core ")
+                    && let Ok(k) = v.trim().parse() {
+                        local.push((k, input));
+                    }
+            }
+            for (k, input) in local {
+                cores.insert((pkg_id.unwrap_or(0), k), t.core_paths.len());
+                t.core_paths.push(input);
+            }
+        }
+        if !cores.is_empty() {
+            let mut b = String::new();
+            for id in 0..1024usize {
+                let base = format!("/sys/devices/system/cpu/cpu{id}/topology");
+                let Some(core) = read_int(&format!("{base}/core_id"), &mut b) else {
+                    if id > 0 && !std::path::Path::new(&format!("/sys/devices/system/cpu/cpu{id}")).exists() {
+                        break;
+                    }
+                    t.cpu_core.push(None);
+                    continue;
+                };
+                let pkg = read_int(&format!("{base}/physical_package_id"), &mut b).unwrap_or(0);
+                t.cpu_core.push(cores.get(&(pkg, core)).copied());
+            }
+        }
+
+        // AMD e outros: só a temperatura geral
+        if t.pkg_paths.is_empty() {
+            for want in ["k10temp", "zenpower", "cpu_thermal", "soc_thermal"] {
+                let Some((_, h)) = hw.iter().find(|(n, _)| n == want) else { continue };
+                let inputs = temp_inputs(h);
+                // k10temp: Tdie é a real; Tctl pode ter deslocamento em alguns Ryzen
+                let pick = ["Tdie", "Tctl"]
+                    .iter()
+                    .find_map(|l| inputs.iter().find(|(lab, _)| lab == l))
+                    .or_else(|| inputs.first());
+                if let Some((_, input)) = pick {
+                    t.pkg_paths.push(input.clone());
+                    t.read_high(input);
+                    break;
+                }
+            }
+        }
+        if t.pkg_paths.is_empty() {
+            for e in std::fs::read_dir("/sys/class/thermal").into_iter().flatten().flatten() {
+                let p = e.path().to_string_lossy().into_owned();
+                let ty = std::fs::read_to_string(format!("{p}/type")).unwrap_or_default();
+                if ty.trim() == "x86_pkg_temp" {
+                    t.pkg_paths.push(format!("{p}/temp"));
+                    break;
+                }
+            }
+        }
+        t.core_vals = vec![None; t.core_paths.len()];
+        t.sample();
+        t
+    }
+
+    fn read_high(&mut self, input: &str) {
+        if self.high.is_none() {
+            let max = input.replace("_input", "_max");
+            self.high = read_int(&max, &mut self.buf).filter(|v| *v > 0);
+        }
+    }
+
+    pub fn ok(&self) -> bool {
+        !self.pkg_paths.is_empty() || !self.core_paths.is_empty()
+    }
+
+    pub fn sample(&mut self) {
+        let b = &mut self.buf;
+        for (v, p) in self.core_vals.iter_mut().zip(&self.core_paths) {
+            *v = read_int(p, b);
+        }
+        self.pkg = self.pkg_paths.iter().filter_map(|p| read_int(p, b)).max();
+        if self.pkg.is_none() {
+            self.pkg = self.core_vals.iter().flatten().copied().max();
+        }
+    }
+
+    /// temperatura do núcleo físico onde está a CPU lógica `id`, em m°C
+    pub fn of_cpu(&self, id: usize) -> Option<i64> {
+        self.cpu_core.get(id).copied().flatten().and_then(|k| self.core_vals[k])
+    }
+}
+
+/// (rótulo, caminho do temp*_input) de um hwmon, em ordem numérica
+fn temp_inputs(h: &str) -> Vec<(String, String)> {
+    let mut v: Vec<(u32, String, String)> = std::fs::read_dir(h)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let f = e.file_name().into_string().ok()?;
+            let n: u32 = f.strip_prefix("temp")?.strip_suffix("_input")?.parse().ok()?;
+            let label = std::fs::read_to_string(format!("{h}/temp{n}_label")).unwrap_or_default();
+            Some((n, label.trim().to_string(), format!("{h}/{f}")))
+        })
+        .collect();
+    v.sort();
+    v.into_iter().map(|(_, l, p)| (l, p)).collect()
 }
 
 pub fn cpu_name() -> String {
