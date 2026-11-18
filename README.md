@@ -69,7 +69,7 @@ cd aerotop
 
 ### Só o programa, sem atalho
 
-Para quem prefere fazer tudo à mão (Linux de 64 bits com `glibc` 2.34 ou mais nova: Ubuntu 22.04+, Debian 12+, Mint 21+, Fedora 35+…):
+Para quem prefere fazer tudo à mão (qualquer Linux de 64 bits x86_64: o programa pronto é estático, não depende da versão da `glibc`):
 
 ```bash
 wget https://github.com/1155dosilicon/aerotop/releases/latest/download/aerotop

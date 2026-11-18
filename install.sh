@@ -65,10 +65,6 @@ if [ -n "$SRC" ] && { command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin
     install -m 755 "$SRC/target/release/aerotop-rs" "$BIN_DIR/aerotop"
 else
     [ "$(uname -m)" = "x86_64" ] || die "o programa pronto é só para x86_64; instale o Rust (https://rustup.rs) e rode de novo"
-    G=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
-    if [ -n "$G" ] && [ "$(printf '%s\n2.34\n' "$G" | sort -V | head -1)" != "2.34" ]; then
-        die "o programa pronto precisa da glibc 2.34+ (você tem $G); instale o Rust (https://rustup.rs) e rode de novo para compilar"
-    fi
     say "Baixando o programa pronto"
     baixar "$BIN_URL" "$TMP/aerotop"
     install -m 755 "$TMP/aerotop" "$BIN_DIR/aerotop"
