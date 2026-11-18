@@ -192,7 +192,10 @@ fn dump(size: &str) -> Result<()> {
         let buf = term.backend().buffer();
         for y in 0..h {
             let line: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
-            println!("{}", line.trim_end());
+            // saída fechada antes do fim (ex.: `aerotop --dump | head`): só para
+            if writeln!(std::io::stdout(), "{}", line.trim_end()).is_err() {
+                return Ok(());
+            }
         }
     }
     Ok(())
