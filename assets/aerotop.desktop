@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=AeroTop
+GenericName=Monitor do sistema
+GenericName[en]=System Monitor
+Comment=CPU, memória, zram, GPU e processos no terminal
+Comment[en]=CPU, memory, zram, GPU and processes in the terminal
+Exec=aerotop
+Icon=aerotop
+Terminal=true
+Categories=System;Monitor;
+Keywords=monitor;cpu;memoria;ram;gpu;processos;top;

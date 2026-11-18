@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/aerotop.svg" alt="" width="96">
+
 # 🫧 AeroTop
 
 **Monitor do sistema para o terminal, com visual Frutiger Aero / Windows 7, escrito em Rust.**
@@ -43,7 +45,31 @@ Também dá pra usar o mouse: clique nas abas e use a rodinha na lista.
 
 ## ⬇️ Instalação
 
-### Programa pronto (qualquer Linux de 64 bits)
+### Jeito fácil (recomendado)
+
+Um comando instala o programa, o ícone e o atalho no menu (Sistema → AeroTop), tudo dentro da sua pasta pessoal, sem precisar de `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/1155dosilicon/aerotop/main/install.sh | sh
+```
+
+Se você tiver o Rust instalado, ele compila; se não, baixa o programa pronto. No XFCE, GNOME e MATE o atalho já abre o terminal no tamanho ideal (120×40).
+
+Depois é só abrir pelo menu ou digitar `aerotop` no terminal.
+
+### Pelo código-fonte
+
+Precisa do Rust 1.85 ou mais novo ([rustup.rs](https://rustup.rs)):
+
+```bash
+git clone https://github.com/1155dosilicon/aerotop
+cd aerotop
+./install.sh
+```
+
+### Só o programa, sem atalho
+
+Para quem prefere fazer tudo à mão (qualquer Linux de 64 bits; só precisa da `glibc`):
 
 ```bash
 wget https://github.com/1155dosilicon/aerotop/releases/latest/download/aerotop
@@ -52,18 +78,25 @@ mkdir -p ~/.local/bin && mv aerotop ~/.local/bin/
 aerotop
 ```
 
-É um arquivo único de menos de 1 MB. Só precisa da `glibc`, que todo Linux comum já tem.
+### O que é instalado e onde
 
-### Compilando
+| Arquivo | Local |
+|---|---|
+| Programa | `~/.local/bin/aerotop` |
+| Atalho do menu | `~/.local/share/applications/aerotop.desktop` |
+| Ícone | `~/.local/share/icons/hicolor/*/apps/aerotop.*` |
 
-Precisa do Rust 1.85 ou mais novo ([rustup.rs](https://rustup.rs)):
+> **`aerotop: comando não encontrado`?** A pasta `~/.local/bin` não está no seu PATH. Adicione `export PATH="$HOME/.local/bin:$PATH"` ao final do `~/.bashrc` e abra um terminal novo.
+>
+> **O atalho não apareceu no menu?** Saia e entre de novo na sessão (no XFCE também dá para rodar `xfce4-panel -r`).
+
+### Desinstalar
 
 ```bash
-git clone https://github.com/1155dosilicon/aerotop
-cd aerotop
-cargo build --release
-cp target/release/aerotop-rs ~/.local/bin/aerotop
+curl -fsSL https://raw.githubusercontent.com/1155dosilicon/aerotop/main/install.sh | sh -s -- --uninstall
 ```
+
+Ou, de dentro da pasta do código: `./install.sh --uninstall`.
 
 ### Extras opcionais
 

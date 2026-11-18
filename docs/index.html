@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫧</text></svg>">
+<link rel="icon" type="image/svg+xml" href="img/aerotop.svg">
 <style>
 :root{
   --bg:#050b14; --bg2:#0a1626; --ink:#e8f4ff; --mute:#8fb0cc;
@@ -201,20 +201,25 @@ footer .made{margin-top:8px;opacity:.75}
   <p class="sub">Funciona em qualquer Linux de 64 bits: Ubuntu, Mint, Fedora, Arch, Slackware…</p>
   <div class="two">
     <div>
-      <h3>Programa pronto</h3>
+      <h3>Jeito fácil (com atalho no menu)</h3>
       <div class="term"><div class="tbar">terminal<button data-copy="a">copiar</button></div>
-<pre id="a"><span class="p">$</span> wget https://github.com/1155dosilicon/aerotop/releases/latest/download/aerotop
-<span class="p">$</span> chmod +x aerotop
-<span class="p">$</span> mkdir -p ~/.local/bin &amp;&amp; mv aerotop ~/.local/bin/
-<span class="p">$</span> aerotop</pre></div>
+<pre id="a"><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/1155dosilicon/aerotop/main/install.sh | sh</pre></div>
+      <p class="sub" style="text-align:left;margin-top:10px">Instala o programa, o ícone e o atalho em <b>Sistema → AeroTop</b>, sem <code>sudo</code>. Para remover: <code>… | sh -s -- --uninstall</code>.</p>
     </div>
     <div>
       <h3>Compilando (Rust 1.85+)</h3>
       <div class="term"><div class="tbar">terminal<button data-copy="b">copiar</button></div>
 <pre id="b"><span class="p">$</span> git clone https://github.com/1155dosilicon/aerotop
 <span class="p">$</span> cd aerotop
-<span class="p">$</span> cargo build --release
-<span class="p">$</span> cp target/release/aerotop-rs ~/.local/bin/aerotop</pre></div>
+<span class="p">$</span> ./install.sh</pre></div>
+    </div>
+    <div>
+      <h3>Só o programa</h3>
+      <div class="term"><div class="tbar">terminal<button data-copy="c">copiar</button></div>
+<pre id="c"><span class="p">$</span> wget https://github.com/1155dosilicon/aerotop/releases/latest/download/aerotop
+<span class="p">$</span> chmod +x aerotop
+<span class="p">$</span> mkdir -p ~/.local/bin &amp;&amp; mv aerotop ~/.local/bin/
+<span class="p">$</span> aerotop</pre></div>
     </div>
   </div>
 
