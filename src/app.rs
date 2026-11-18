@@ -1,10 +1,10 @@
 //! Estado do programa, coleta a cada segundo, teclas e ações.
 use crate::collect::gpu::Gpu;
+use crate::collect::procs;
 use crate::collect::procs::Procs;
 use crate::collect::sys::{self, Cpu, CpuTemp, Disk, Mem, Net, Zram};
 use crate::ui::draw::R;
 use crate::ui::theme::{GRAY, GREEN, RED};
-use crate::collect::procs;
 use crate::util::{br, errno, fmt_bytes, pidfd_kill, pidfd_open, pyround};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::Color;
@@ -17,14 +17,8 @@ pub const HIST: usize = 600;
 
 /// Degraus de prioridade (valor "nice": menor = mais prioridade).
 /// Para em -15 de propósito: -20 pode travar o resto do sistema.
-pub const NIVEIS: [(i32, &str); 6] = [
-    (19, "Baixa"),
-    (10, "Abaixo do normal"),
-    (0, "Normal"),
-    (-5, "Acima do normal"),
-    (-10, "Alta"),
-    (-15, "Muito alta"),
-];
+pub const NIVEIS: [(i32, &str); 6] =
+    [(19, "Baixa"), (10, "Abaixo do normal"), (0, "Normal"), (-5, "Acima do normal"), (-10, "Alta"), (-15, "Muito alta")];
 
 pub fn nivel_nome(nice: i32) -> &'static str {
     NIVEIS.iter().find(|(n, _)| nice >= *n).map_or("Muito alta", |(_, s)| *s)
@@ -195,9 +189,10 @@ impl App {
             self.gpu.read_sensors(self.tab == Tab::Gpu, self.tab == Tab::Proc);
             let s = &self.gpu.sens;
             if let (Some(vu), Some(vt)) = (s.vram_used, s.vram_total)
-                && vt > 0 {
-                    push(&mut self.vram_hist, 100.0 * vu as f64 / vt as f64);
-                }
+                && vt > 0
+            {
+                push(&mut self.vram_hist, 100.0 * vu as f64 / vt as f64);
+            }
         }
         if self.tab == Tab::Proc {
             self.net.sample();
@@ -294,13 +289,7 @@ impl App {
                 det.push_str(&format!(" — {} °C", pyround(t as f64 / 1000.0)));
             }
             let (dot, status) = st(g, 70.0, 10.0, PADRAO);
-            rows.push(OvRow {
-                comp: "GPU",
-                dot,
-                status,
-                util: g.map(|g| format!("{} %", pyround(g))).unwrap_or_else(|| "--".into()),
-                det,
-            });
+            rows.push(OvRow { comp: "GPU", dot, status, util: g.map(|g| format!("{} %", pyround(g))).unwrap_or_else(|| "--".into()), det });
         }
     }
 
@@ -582,10 +571,7 @@ impl App {
             KeyCode::Char('-') => self.prioridade(-1),
             KeyCode::Char('t') => {
                 self.show_kthreads = !self.show_kthreads;
-                self.notify(
-                    if self.show_kthreads { "Mostrando threads do kernel" } else { "Threads do kernel escondidas" },
-                    Sev::Info,
-                );
+                self.notify(if self.show_kthreads { "Mostrando threads do kernel" } else { "Threads do kernel escondidas" }, Sev::Info);
                 if self.tab == Tab::Proc {
                     self.refresh_procs();
                 }

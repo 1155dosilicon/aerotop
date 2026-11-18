@@ -153,9 +153,7 @@ impl Gpu {
             s.sclk = read_int(&format!("{h}/freq1_input"), b);
             s.mclk = read_int(&format!("{h}/freq2_input"), b);
             s.fan = read_int(&format!("{h}/fan1_input"), b);
-            s.power = read_int(&format!("{h}/power1_input"), b)
-                .filter(|v| *v != 0)
-                .or_else(|| read_int(&format!("{h}/power1_average"), b));
+            s.power = read_int(&format!("{h}/power1_input"), b).filter(|v| *v != 0).or_else(|| read_int(&format!("{h}/power1_average"), b));
             s.cap = read_int(&format!("{h}/power1_cap"), b);
         }
     }
@@ -174,10 +172,8 @@ impl Dev {
             if !buf.lines().any(|l| l == "DRIVER=amdgpu") {
                 continue;
             }
-            let pdev = std::fs::canonicalize(&dir)
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_default();
+            let pdev =
+                std::fs::canonicalize(&dir).ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
             let hwmon = sorted_dir(&format!("{dir}/hwmon"), "hwmon").first().map(|h| format!("{dir}/hwmon/{h}"));
             return Some(Dev {
                 dir,

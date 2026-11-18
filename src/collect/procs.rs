@@ -262,13 +262,7 @@ impl Procs {
             });
         }
         self.known.retain(|_, k| k.stamp == stamp);
-        self.list.sort_by(|a, b| {
-            a.rank
-                .cmp(&b.rank)
-                .then(b.cpu.total_cmp(&a.cpu))
-                .then(b.memp.total_cmp(&a.memp))
-                .then(a.pid.cmp(&b.pid))
-        });
+        self.list.sort_by(|a, b| a.rank.cmp(&b.rank).then(b.cpu.total_cmp(&a.cpu)).then(b.memp.total_cmp(&a.memp)).then(a.pid.cmp(&b.pid)));
         dt.is_some() && !quick
     }
 }
@@ -285,10 +279,7 @@ mod tests {
     #[test]
     fn parse_stat_le_os_campos_usados() {
         let st = parse_stat(KITTY).unwrap();
-        assert_eq!(
-            st,
-            Stat { comm: "kitty", state: b'S', ppid: 1, ticks: 1820, nice: 0, threads: 27, start: 98765, rss_pages: 45678 }
-        );
+        assert_eq!(st, Stat { comm: "kitty", state: b'S', ppid: 1, ticks: 1820, nice: 0, threads: 27, start: 98765, rss_pages: 45678 });
     }
 
     #[test]

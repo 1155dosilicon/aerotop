@@ -61,9 +61,10 @@ impl Cv<'_> {
 
     pub fn ch(&mut self, x: i32, y: i32, c: char, st: Style) {
         if self.clip.contains(x, y)
-            && let Some(cell) = self.buf.cell_mut((x as u16, y as u16)) {
-                cell.set_char(c).set_style(st);
-            }
+            && let Some(cell) = self.buf.cell_mut((x as u16, y as u16))
+        {
+            cell.set_char(c).set_style(st);
+        }
     }
 
     /// Escreve e devolve a coluna seguinte.

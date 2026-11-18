@@ -25,11 +25,7 @@ pub fn br(x: f64, nd: usize) -> String {
 }
 
 pub fn fmt_bytes(n: f64) -> String {
-    const UNITS: [(&str, f64, usize); 3] = [
-        ("GB", (1u64 << 30) as f64, 2),
-        ("MB", (1u64 << 20) as f64, 1),
-        ("KB", (1u64 << 10) as f64, 1),
-    ];
+    const UNITS: [(&str, f64, usize); 3] = [("GB", (1u64 << 30) as f64, 2), ("MB", (1u64 << 20) as f64, 1), ("KB", (1u64 << 10) as f64, 1)];
     for (unit, div, nd) in UNITS {
         if n >= div {
             return format!("{} {}", br(n / div, nd), unit);

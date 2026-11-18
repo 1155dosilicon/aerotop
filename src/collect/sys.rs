@@ -47,11 +47,7 @@ impl Cpu {
                 self.ids[i] = id;
                 let (pb, pt) = self.prev[i];
                 let dt = total.saturating_sub(pt);
-                self.per[i] = if dt == 0 {
-                    0.0
-                } else {
-                    round1((100.0 * busy.saturating_sub(pb) as f64 / dt as f64).clamp(0.0, 100.0))
-                };
+                self.per[i] = if dt == 0 { 0.0 } else { round1((100.0 * busy.saturating_sub(pb) as f64 / dt as f64).clamp(0.0, 100.0)) };
                 self.prev[i] = (busy, total);
             }
             i += 1;
@@ -59,11 +55,7 @@ impl Cpu {
         self.prev.truncate(i);
         self.per.truncate(i);
         self.ids.truncate(i);
-        self.total = if self.per.is_empty() {
-            0.0
-        } else {
-            self.per.iter().sum::<f64>() / self.per.len() as f64
-        };
+        self.total = if self.per.is_empty() { 0.0 } else { self.per.iter().sum::<f64>() / self.per.len() as f64 };
     }
 }
 
@@ -111,9 +103,10 @@ impl CpuTemp {
                     t.pkg_paths.push(input.clone());
                     t.read_high(&input);
                 } else if let Some(v) = label.strip_prefix("Core ")
-                    && let Ok(k) = v.trim().parse() {
-                        local.push((k, input));
-                    }
+                    && let Ok(k) = v.trim().parse()
+                {
+                    local.push((k, input));
+                }
             }
             for (k, input) in local {
                 cores.insert((pkg_id.unwrap_or(0), k), t.core_paths.len());
@@ -142,10 +135,7 @@ impl CpuTemp {
                 let Some((_, h)) = hw.iter().find(|(n, _)| n == want) else { continue };
                 let inputs = temp_inputs(h);
                 // k10temp: Tdie é a real; Tctl pode ter deslocamento em alguns Ryzen
-                let pick = ["Tdie", "Tctl"]
-                    .iter()
-                    .find_map(|l| inputs.iter().find(|(lab, _)| lab == l))
-                    .or_else(|| inputs.first());
+                let pick = ["Tdie", "Tctl"].iter().find_map(|l| inputs.iter().find(|(lab, _)| lab == l)).or_else(|| inputs.first());
                 if let Some((_, input)) = pick {
                     t.pkg_paths.push(input.clone());
                     t.read_high(input);
@@ -371,10 +361,7 @@ impl Zram {
             .collect();
         names.sort();
         let mut z = Zram {
-            devs: names
-                .iter()
-                .map(|n| (format!("/sys/block/{n}/disksize"), format!("/sys/block/{n}/mm_stat")))
-                .collect(),
+            devs: names.iter().map(|n| (format!("/sys/block/{n}/disksize"), format!("/sys/block/{n}/mm_stat"))).collect(),
             alg: "?".into(),
             stats: None,
             buf: String::new(),
