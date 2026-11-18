@@ -62,7 +62,7 @@ if [ -n "$SRC" ] && { command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin
     CARGO=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
     say "Compilando com o Rust (pode levar um minuto)"
     (cd "$SRC" && "$CARGO" build --release)
-    install -m 755 "$SRC/target/release/aerotop-rs" "$BIN_DIR/aerotop"
+    install -m 755 "$SRC/target/release/aerotop" "$BIN_DIR/aerotop"
 else
     [ "$(uname -m)" = "x86_64" ] || die "o programa pronto é só para x86_64; instale o Rust (https://rustup.rs) e rode de novo"
     say "Baixando o programa pronto"
