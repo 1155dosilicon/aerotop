@@ -94,20 +94,64 @@ fn main_loop(term: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
 
 /// `aerotop --ram`: guarda a saída do dmidecode (precisa de senha) em cache.
 fn ram_cmd() -> Result<()> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let dir = format!("{home}/.cache/aerotop");
-    std::fs::create_dir_all(&dir)?;
-    let out = std::process::Command::new("pkexec").args(["dmidecode", "-t", "memory"]).output();
+    // o dmidecode fica em /usr/sbin, que não está no PATH de usuário comum no
+    // Debian; o pkexec procura no PATH de quem chamou, então vai o caminho inteiro
+    let dmi = ["/usr/sbin/dmidecode", "/sbin/dmidecode", "/usr/bin/dmidecode", "/bin/dmidecode"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .unwrap_or("dmidecode");
+    // SAFETY: geteuid não tem pré-condições.
+    let root = unsafe { libc::geteuid() } == 0;
+    // rodando como root (pkexec/sudo na frente): salva na pasta de quem chamou
+    let owner = ["PKEXEC_UID", "SUDO_UID"]
+        .iter()
+        .filter(|_| root)
+        .find_map(|v| std::env::var(v).ok()?.parse::<u32>().ok());
+    let home = match owner.and_then(user_home) {
+        Some((h, _)) => h,
+        None => std::env::var("HOME").unwrap_or_default(),
+    };
+    let out = if root {
+        std::process::Command::new(dmi).args(["-t", "memory"]).output()
+    } else {
+        std::process::Command::new("pkexec").args([dmi, "-t", "memory"]).output()
+    };
     match out {
         Ok(o) if o.status.success() => {
-            std::fs::write(format!("{dir}/dmidecode-memory.txt"), &o.stdout)?;
+            let dir = format!("{home}/.cache/aerotop");
+            std::fs::create_dir_all(&dir)?;
+            let file = format!("{dir}/dmidecode-memory.txt");
+            std::fs::write(&file, &o.stdout)?;
+            if let Some((_, gid)) = owner.and_then(user_home) {
+                for p in [format!("{home}/.cache"), dir, file] {
+                    let _ = std::os::unix::fs::chown(&p, owner, Some(gid));
+                }
+            }
             let mut mem = collect::sys::Mem::default();
             mem.sample();
-            println!("RAM: {}", collect::sys::ram_info(mem.total));
+            println!("RAM: {}", collect::sys::ram_info_from(&home, mem.total));
         }
-        _ => println!("Não consegui ler (pkexec cancelado?)"),
+        // 126/127: o pkexec não autorizou (janela fechada ou senha errada)
+        Ok(o) if !root && matches!(o.status.code(), Some(126 | 127)) => println!("Não consegui ler: a senha foi cancelada ou recusada."),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            println!("Não consegui ler a memória com o {dmi}: {}", err.trim());
+        }
+        Err(e) => println!("Não consegui rodar o {}: {e}", if root { dmi } else { "pkexec" }),
     }
     Ok(())
+}
+
+/// (pasta pessoal, grupo) de um usuário, pelo /etc/passwd
+fn user_home(uid: u32) -> Option<(String, u32)> {
+    // SAFETY: getpwuid devolve ponteiro para área estática; só a thread principal usa.
+    unsafe {
+        let pw = libc::getpwuid(uid);
+        if pw.is_null() || (*pw).pw_dir.is_null() {
+            return None;
+        }
+        Some((std::ffi::CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned(), (*pw).pw_gid))
+    }
 }
 
 /// `--dump [LxA]`: desenha as três abas como texto (para conferência e testes).

@@ -269,7 +269,10 @@ impl Mem {
 
 /// "11891 MB  ·  DDR3 1333 MT/s  ·  4 pentes" — velocidade vem do cache do dmidecode.
 pub fn ram_info(total_bytes: u64) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    ram_info_from(&std::env::var("HOME").unwrap_or_default(), total_bytes)
+}
+
+pub fn ram_info_from(home: &str, total_bytes: u64) -> String {
     let mut txt = String::new();
     read_into(&format!("{home}/.cache/aerotop/dmidecode-memory.txt"), &mut txt);
     let mut parts = vec![format!("{} MB", total_bytes >> 20)];
