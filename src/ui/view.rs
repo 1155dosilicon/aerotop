@@ -1,5 +1,6 @@
 //! Desenho da tela: barra de abas, as três abas, rodapé, diálogo e avisos.
 use crate::app::{App, Sev, Tab, nivel_nome};
+use crate::collect::procs::Rank;
 use crate::ui::bigfont::{big, title};
 use crate::ui::draw::{Cv, R, bold, fg, graph, meter, width, wrap};
 use crate::ui::theme::*;
@@ -362,16 +363,16 @@ fn tab_proc(cv: &mut Cv, app: &mut App, r: R) {
             tcv.fill(R::new(rows.x, ry, rows.w, 1), TABLE_ALT);
         }
         let (color, label) = match p.rank {
-            0 => (RED, "Pesado"),
-            1 => (GREEN, "Ativo"),
-            _ => (GRAY, "Segundo plano"),
+            Rank::Pesado => (RED, "Pesado"),
+            Rank::Ativo => (GREEN, "Ativo"),
+            Rank::SegundoPlano => (GRAY, "Segundo plano"),
         };
         {
             let mut c = tcv.clipped(R::new(xs[0], ry, w[0], 1));
             dot(&mut c, xs[0], ry, color, label);
         }
-        let mine = p.uid == app.me;
-        let name_st = if p.rank == 0 {
+        let mine = p.uid == Some(app.me);
+        let name_st = if p.rank == Rank::Pesado {
             bold(WHITE)
         } else if mine {
             fg(SOFT)
@@ -380,7 +381,7 @@ fn tab_proc(cv: &mut Cv, app: &mut App, r: R) {
         };
         tcv.put_w(xs[1], ry, w[1], &p.name, name_st, false);
         tcv.put_w(xs[2], ry, w[2], &p.pid.to_string(), plain, false);
-        let user = app.procs.users.get(&p.uid).map(String::as_str).unwrap_or("?");
+        let user = p.uid.and_then(|u| app.procs.users.get(&u)).map_or("?", String::as_str);
         tcv.put_w(xs[3], ry, w[3].min(10), user, plain, false);
         tcv.put_w(xs[4], ry, w[4], &format!("{} %", br(p.cpu, 1)), fg(if p.cpu >= 50.0 { RED } else { SOFT }), true);
         tcv.put_w(xs[5], ry, w[5], &fmt_bytes(p.rss as f64), plain, true);
@@ -454,5 +455,21 @@ fn toasts(cv: &mut Cv, app: &App, area: R) {
         }
         cv.put_w(r.x + 2, r.y + 1, w - 3, &t.text, fg(TITLE), false);
         bottom -= 4;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proc_cols_encolhe_ate_caber() {
+        let soma = |w: [i32; 8]| w.iter().map(|c| c + 2).sum::<i32>();
+        assert_eq!(proc_cols(200), [18, 28, 8, 10, 8, 11, 17, 8]);
+        for avail in [100, 120, 140] {
+            assert!(soma(proc_cols(avail)) <= avail, "não coube em {avail}");
+        }
+        // abaixo do mínimo de todas as colunas não encolhe mais (o recorte cuida do resto)
+        assert_eq!(proc_cols(10), [15, 12, 7, 8, 7, 9, 16, 7]);
     }
 }

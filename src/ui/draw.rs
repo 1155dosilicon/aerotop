@@ -202,3 +202,37 @@ pub fn wrap(s: &str, w: i32) -> Vec<String> {
     }
     lines
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inter_recorta_e_nunca_fica_negativo() {
+        let a = R::new(0, 0, 10, 5);
+        let b = R::new(8, 3, 10, 10);
+        let i = a.inter(b);
+        assert_eq!((i.x, i.y, i.w, i.h), (8, 3, 2, 2));
+        let longe = a.inter(R::new(50, 50, 3, 3));
+        assert_eq!((longe.w, longe.h), (0, 0));
+        assert!(!longe.contains(50, 50));
+    }
+
+    #[test]
+    fn wrap_quebra_por_palavra() {
+        assert_eq!(wrap("AMD Radeon RX 550  (Lexa PRO)", 12), ["AMD Radeon", "RX 550", "(Lexa PRO)"]);
+        assert_eq!(wrap("curto", 20), ["curto"]);
+        // palavra maior que a largura fica inteira (o desenho corta depois)
+        assert_eq!(wrap("a palavragrande b", 5), ["a", "palavragrande", "b"]);
+    }
+
+    #[test]
+    fn desenho_fora_da_tela_nao_quebra() {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 10, 4));
+        let mut cv = Cv { clip: R::new(0, 0, 10, 4), buf: &mut buf };
+        cv.put(-5, 1, "olá mundo cortado", Style::new());
+        cv.fill(R::new(-3, -3, 100, 100), Color::Black);
+        meter(&mut cv, R::new(8, 2, 11, 20), 75.0, "75 %", "CPU 1", Color::Green, Color::Gray, Color::White);
+        graph(&mut cv, R::new(-2, 0, 30, 3), &VecDeque::from(vec![50.0; 40]), [Color::Blue; 3], Color::Black);
+    }
+}

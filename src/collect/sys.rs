@@ -16,11 +16,17 @@ pub struct Cpu {
 
 impl Cpu {
     pub fn sample(&mut self) {
-        if !read_into("/proc/stat", &mut self.buf) {
-            return;
+        let mut buf = std::mem::take(&mut self.buf);
+        if read_into("/proc/stat", &mut buf) {
+            self.update(&buf);
         }
+        self.buf = buf;
+    }
+
+    /// Atualiza o uso por núcleo com um novo conteúdo de /proc/stat.
+    fn update(&mut self, stat: &str) {
         let mut i = 0;
-        for line in self.buf.lines() {
+        for line in stat.lines() {
             let Some(rest) = line.strip_prefix("cpu") else { break };
             if !rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
                 continue; // linha "cpu " agregada
@@ -234,16 +240,19 @@ pub struct Mem {
 
 impl Mem {
     pub fn sample(&mut self) {
-        if !read_into("/proc/meminfo", &mut self.buf) {
-            return;
+        let mut buf = std::mem::take(&mut self.buf);
+        if read_into("/proc/meminfo", &mut buf) {
+            self.update(&buf);
         }
-        let (mut total, mut free, mut avail, mut buffers, mut cached, mut srecl, mut st, mut sf) =
-            (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-        for line in self.buf.lines() {
+        self.buf = buf;
+    }
+
+    fn update(&mut self, meminfo: &str) {
+        let (mut total, mut avail, mut buffers, mut cached, mut srecl, mut st, mut sf) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        for line in meminfo.lines() {
             let Some((key, rest)) = line.split_once(':') else { continue };
             let slot = match key {
                 "MemTotal" => &mut total,
-                "MemFree" => &mut free,
                 "MemAvailable" => &mut avail,
                 "Buffers" => &mut buffers,
                 "Cached" => &mut cached,
@@ -254,16 +263,14 @@ impl Mem {
             };
             *slot = rest.split_ascii_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0) * 1024;
         }
-        let cached = cached + srecl;
         self.total = total;
         self.available = avail;
-        self.cache = buffers + cached;
+        self.cache = buffers + cached + srecl;
         // psutil 7: "used" = total - disponível
         self.used = total.saturating_sub(avail);
-        self.percent = if total > 0 { round1(100.0 * (total - avail.min(total)) as f64 / total as f64) } else { 0.0 };
+        self.percent = if total > 0 { round1(100.0 * self.used as f64 / total as f64) } else { 0.0 };
         self.swap_total = st;
         self.swap_used = st.saturating_sub(sf);
-        let _ = free;
     }
 }
 
@@ -275,6 +282,11 @@ pub fn ram_info(total_bytes: u64) -> String {
 pub fn ram_info_from(home: &str, total_bytes: u64) -> String {
     let mut txt = String::new();
     read_into(&format!("{home}/.cache/aerotop/dmidecode-memory.txt"), &mut txt);
+    ram_info_text(&txt, total_bytes)
+}
+
+/// Resumo da RAM a partir da saída do `dmidecode -t memory` (pode ser vazia).
+fn ram_info_text(txt: &str, total_bytes: u64) -> String {
     let mut parts = vec![format!("{} MB", total_bytes >> 20)];
 
     fn speed_of(v: &str) -> Option<String> {
@@ -375,10 +387,9 @@ impl Zram {
                 continue;
             }
             read_into(&format!("/sys/block/{n}/comp_algorithm"), &mut b);
-            if let (Some(a), Some(e)) = (b.find('['), b.find(']'))
-                && e > a {
-                    z.alg = b[a + 1..e].to_string();
-                }
+            if let Some(alg) = selected_alg(&b) {
+                z.alg = alg.to_string();
+            }
             break;
         }
         z
@@ -403,13 +414,46 @@ impl Zram {
     }
 }
 
+/// Em `lzo lzo-rle [zstd] lz4`, o algoritmo em uso é o que está entre colchetes.
+fn selected_alg(txt: &str) -> Option<&str> {
+    let (a, e) = (txt.find('[')?, txt.find(']')?);
+    (e > a).then(|| &txt[a + 1..e])
+}
+
 // ───────────────────────────── rede ─────────────────────────────
+/// Adaptador de rede mais ocupado no último intervalo.
+pub struct NetBest {
+    pub nic: String,
+    /// bytes/s, somando entrada e saída
+    pub rate: f64,
+    /// bytes/s da direção mais cheia: o link é full duplex (a velocidade vale
+    /// para cada lado), então é ela que se compara com a velocidade
+    pub peak: f64,
+    /// velocidade do link em Mbit/s (0 = desconhecida, como no Wi-Fi)
+    pub speed: i64,
+}
+
+impl NetBest {
+    /// Uso do link em %, quando a velocidade é conhecida.
+    pub fn util(&self) -> Option<f64> {
+        (self.speed > 0).then(|| (100.0 * self.peak * 8.0 / (self.speed as f64 * 1e6)).min(100.0))
+    }
+}
+
 pub struct Net {
-    prev: HashMap<String, u64>,
+    prev: HashMap<String, (u64, u64)>,
     prev_t: Instant,
-    /// adaptador mais ocupado: (nome, bytes/s, velocidade do link em Mbit/s ou 0)
-    pub best: Option<(String, f64, i64)>,
+    pub best: Option<NetBest>,
     buf: String,
+}
+
+/// Uma linha de /proc/net/dev: (adaptador, bytes recebidos, bytes enviados).
+fn netdev_line(line: &str) -> Option<(&str, u64, u64)> {
+    let (nic, rest) = line.split_once(':')?;
+    let mut it = rest.split_ascii_whitespace();
+    let rx = it.next()?.parse().ok()?;
+    let tx = it.nth(7)?.parse().ok()?;
+    Some((nic.trim(), rx, tx))
 }
 
 impl Net {
@@ -427,35 +471,31 @@ impl Net {
         if !read_into("/proc/net/dev", &mut self.buf) {
             return;
         }
-        let mut best: Option<(&str, f64)> = None;
+        // (adaptador, total B/s, direção mais cheia B/s)
+        let mut best: Option<(&str, f64, f64)> = None;
         for line in self.buf.lines().skip(2) {
-            let Some((nic, rest)) = line.split_once(':') else { continue };
-            let nic = nic.trim();
-            let mut it = rest.split_ascii_whitespace();
-            let rx: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            let tx: u64 = it.nth(7).and_then(|v| v.parse().ok()).unwrap_or(0);
-            let tot = rx + tx;
+            let Some((nic, rx, tx)) = netdev_line(line) else { continue };
             let old = match self.prev.get_mut(nic) {
-                Some(p) => Some(std::mem::replace(p, tot)),
+                Some(p) => Some(std::mem::replace(p, (rx, tx))),
                 None => {
-                    self.prev.insert(nic.to_string(), tot);
+                    self.prev.insert(nic.to_string(), (rx, tx));
                     None
                 }
             };
             if nic == "lo" {
                 continue;
             }
-            if let Some(old) = old {
-                let rate = tot.saturating_sub(old) as f64 / dt;
-                if best.is_none_or(|b| rate > b.1) {
-                    best = Some((nic, rate));
+            if let Some((orx, otx)) = old {
+                let (r, t) = (rx.saturating_sub(orx) as f64 / dt, tx.saturating_sub(otx) as f64 / dt);
+                if best.is_none_or(|b| r + t > b.1) {
+                    best = Some((nic, r + t, r.max(t)));
                 }
             }
         }
-        let best = best.map(|(n, r)| (n.to_string(), r));
-        self.best = best.map(|(nic, rate)| {
+        let best = best.map(|(n, rate, peak)| (n.to_string(), rate, peak));
+        self.best = best.map(|(nic, rate, peak)| {
             let speed = read_int(&format!("/sys/class/net/{nic}/speed"), &mut self.buf).unwrap_or(0).max(0);
-            (nic, rate, speed)
+            NetBest { nic, rate, peak, speed }
         });
     }
 }
@@ -468,6 +508,22 @@ pub struct Disk {
     /// (operações/s, leitura B/s, escrita B/s)
     pub rate: Option<(f64, f64, f64)>,
     buf: String,
+}
+
+/// Uma linha de /proc/diskstats: (disco, [leituras, escritas, setores lidos,
+/// setores escritos]). O setor ali é sempre de 512 bytes.
+fn diskstats_line(line: &str) -> Option<(&str, [u64; 4])> {
+    let mut it = line.split_ascii_whitespace();
+    let name = it.nth(2)?;
+    let mut num = || it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let reads = num();
+    num(); // leituras agrupadas
+    let rsec = num();
+    num(); // tempo lendo
+    let writes = num();
+    num(); // escritas agrupadas
+    let wsec = num();
+    Some((name, [reads, writes, rsec, wsec]))
 }
 
 impl Disk {
@@ -486,8 +542,7 @@ impl Disk {
         }
         let mut cur = [0u64; 4];
         for line in self.buf.lines() {
-            let mut it = line.split_ascii_whitespace();
-            let Some(name) = it.nth(2) else { continue };
+            let Some((name, [reads, writes, rsec, wsec])) = diskstats_line(line) else { continue };
             // só discos inteiros de verdade (sem partições, loop, ram, zram)
             let real = match self.real.get(name) {
                 Some(r) => *r,
@@ -500,14 +555,6 @@ impl Disk {
             if !real {
                 continue;
             }
-            let mut num = || it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let reads = num();
-            num();
-            let rsec = num();
-            num();
-            let writes = num();
-            num();
-            let wsec = num();
             cur[0] += reads;
             cur[1] += writes;
             cur[2] += rsec * 512;
@@ -518,5 +565,89 @@ impl Disk {
             (d(0) + d(1), d(2), d(3))
         });
         self.prev = Some(cur);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_calcula_uso_por_nucleo_entre_duas_leituras() {
+        let mut cpu = Cpu::default();
+        cpu.update("cpu  100 0 100 1800 0 0 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0 0 0\ncpu1 0 0 0 1000 0 0 0 0 0 0\nintr 1 2\n");
+        assert_eq!(cpu.per, [0.0, 0.0]);
+        // cpu0: +100 ocupado em +200 no total = 50%; cpu1 só ficou parada
+        cpu.update("cpu  150 0 150 2000 0 0 0 0 0 0\ncpu0 150 0 150 900 0 0 0 0 0 0\ncpu1 0 0 0 1100 0 0 0 0 0 0\n");
+        assert_eq!(cpu.per, [50.0, 0.0]);
+        assert_eq!(cpu.total, 25.0);
+        assert_eq!(cpu.ids, [0, 1]);
+    }
+
+    #[test]
+    fn cpu_iowait_conta_como_parado_e_cpu_desligada_some() {
+        let mut cpu = Cpu::default();
+        cpu.update("cpu0 0 0 0 0 0 0 0 0\ncpu2 0 0 0 0 0 0 0 0\n");
+        cpu.update("cpu0 10 0 0 0 90 0 0 0\ncpu2 0 0 0 100 0 0 0 0\n");
+        assert_eq!(cpu.per, [10.0, 0.0]);
+        assert_eq!(cpu.ids, [0, 2]);
+    }
+
+    #[test]
+    fn mem_le_meminfo_como_o_psutil() {
+        let mut m = Mem::default();
+        m.update(
+            "MemTotal:        8000 kB\nMemFree:         1000 kB\nMemAvailable:    6000 kB\nBuffers:          100 kB\n\
+             Cached:          2000 kB\nSwapCached:         0 kB\nSReclaimable:     300 kB\nSwapTotal:       4000 kB\n\
+             SwapFree:        3000 kB\n",
+        );
+        assert_eq!((m.total, m.available, m.used), (8000 * 1024, 6000 * 1024, 2000 * 1024));
+        assert_eq!(m.cache, 2400 * 1024);
+        assert_eq!(m.percent, 25.0);
+        assert_eq!((m.swap_total, m.swap_used), (4000 * 1024, 1000 * 1024));
+    }
+
+    const DMI: &str = "Memory Device\n\tSize: 4 GB\n\tType: DDR3\n\tSpeed: 1600 MT/s\n\
+                       \tConfigured Memory Speed: 1333 MT/s\nMemory Device\n\tSize: No Module Installed\n\
+                       \tType: Unknown\n\tSpeed: Unknown\nMemory Device\n\tSize: 4096 MB\n\tType: DDR3\n";
+
+    #[test]
+    fn ram_info_prefere_a_velocidade_configurada_e_conta_pentes() {
+        assert_eq!(ram_info_text(DMI, 8 << 30), "8192 MB  ·  DDR3 1333 MT/s  ·  2 pentes");
+        assert_eq!(ram_info_text("\tSize: 8 GB\n\tType: DDR4\n\tSpeed: 2400 MHz\n", 8 << 30), "8192 MB  ·  DDR4 2400 MHz  ·  1 pente");
+    }
+
+    #[test]
+    fn ram_info_sem_cache_ensina_o_comando() {
+        assert_eq!(ram_info_text("", 8 << 30), "8192 MB  ·  velocidade: rode  aerotop --ram");
+    }
+
+    #[test]
+    fn zram_pega_o_algoritmo_entre_colchetes() {
+        assert_eq!(selected_alg("lzo lzo-rle [zstd] lz4\n"), Some("zstd"));
+        assert_eq!(selected_alg("lzo zstd\n"), None);
+    }
+
+    #[test]
+    fn netdev_le_bytes_recebidos_e_enviados() {
+        let line = "  enp3s0: 123456  100  0 0 0 0 0 0 654321 90 0 0 0 0 0 0";
+        assert_eq!(netdev_line(line), Some(("enp3s0", 123456, 654321)));
+        assert_eq!(netdev_line(" face |bytes    packets"), None);
+    }
+
+    #[test]
+    fn uso_da_rede_compara_a_direcao_mais_cheia_com_o_link() {
+        // 100 Mbit/s de download e 100 Mbit/s de upload num link de 100 Mbit/s: cheio, não 200%
+        let b = NetBest { nic: "eth0".into(), rate: 25e6, peak: 12.5e6, speed: 100 };
+        assert_eq!(b.util(), Some(100.0));
+        let wifi = NetBest { speed: 0, ..b };
+        assert_eq!(wifi.util(), None);
+    }
+
+    #[test]
+    fn diskstats_le_operacoes_e_setores() {
+        let line = "   8       0 sda 1000 50 20000 300 400 60 8000 500 0 700 800 0 0 0 0";
+        assert_eq!(diskstats_line(line), Some(("sda", [1000, 400, 20000, 8000])));
+        assert_eq!(diskstats_line("8 0"), None);
     }
 }

@@ -4,10 +4,12 @@ use crate::collect::procs::Procs;
 use crate::collect::sys::{self, Cpu, CpuTemp, Disk, Mem, Net, Zram};
 use crate::ui::draw::R;
 use crate::ui::theme::{GRAY, GREEN, RED};
-use crate::util::{br, errno, fmt_bytes, pyround};
+use crate::collect::procs;
+use crate::util::{br, errno, fmt_bytes, pidfd_kill, pidfd_open, pyround};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::Color;
 use std::collections::VecDeque;
+use std::os::fd::OwnedFd;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -25,7 +27,15 @@ pub const NIVEIS: [(i32, &str); 6] = [
 ];
 
 pub fn nivel_nome(nice: i32) -> &'static str {
-    NIVEIS.iter().find(|(n, _)| nice >= *n).map(|(_, s)| *s).unwrap_or("Muito alta")
+    NIVEIS.iter().find(|(n, _)| nice >= *n).map_or("Muito alta", |(_, s)| *s)
+}
+
+/// Próximo degrau de [`NIVEIS`] a partir do valor nice `atual`, andando
+/// `passo` (+1 = mais prioridade). `None` se já está na ponta.
+pub fn proximo_nivel(atual: i32, passo: isize) -> Option<(i32, &'static str)> {
+    // degrau atual = o mais próximo do valor que o processo tem
+    let idx = (0..NIVEIS.len()).min_by_key(|k| (NIVEIS[*k].0 - atual).abs())?;
+    NIVEIS.get(idx.checked_add_signed(passo)?).copied()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,6 +62,11 @@ pub struct Dialog {
     pub pid: i32,
     pub name: String,
     pub yes: bool,
+    /// "alça" do processo aberta quando o diálogo apareceu: o sinal vai para
+    /// ele mesmo que o PID seja reaproveitado por outro. `None` em kernel
+    /// antigo (< 5.3), onde só dá para conferir o início do processo de novo.
+    pidfd: Option<OwnedFd>,
+    start: u64,
 }
 
 pub struct OvRow {
@@ -172,7 +187,7 @@ impl App {
             self.zram.sample();
         }
         // GPU e VRAM são coletadas sempre: alimentam os gráficos de histórico
-        if self.gpu.ok {
+        if self.gpu.ok() {
             if let Some(g) = self.gpu.sample() {
                 self.gpu_use = Some(g);
                 push(&mut self.gpu_hist, g);
@@ -214,8 +229,8 @@ impl App {
         }
         rows.push(OvRow { comp: "CPU", dot, status, util: format!("{} %", pyround(cpu)), det });
 
-        if let Some((nic, rate, speed)) = &self.net.best {
-            let util = if *speed > 0 { Some(100.0 * rate * 8.0 / (*speed as f64 * 1e6)) } else { None };
+        if let Some(n) = &self.net.best {
+            let util = n.util();
             let (dot, status) = st(Some(util.unwrap_or(0.0)), 60.0, 1.0, PADRAO);
             rows.push(OvRow {
                 comp: "Rede",
@@ -223,9 +238,9 @@ impl App {
                 status,
                 util: match util {
                     Some(u) => format!("{} %", br(u, 1)),
-                    None => format!("{}/s", fmt_bytes(*rate)),
+                    None => format!("{}/s", fmt_bytes(n.rate)),
                 },
-                det: format!("Adaptador mais ocupado: {} — {}/s", nic, fmt_bytes(*rate)),
+                det: format!("Adaptador mais ocupado: {} — {}/s", n.nic, fmt_bytes(n.rate)),
             });
         }
 
@@ -272,7 +287,7 @@ impl App {
             });
         }
 
-        if self.gpu.ok {
+        if self.gpu.ok() {
             let g = self.gpu_use;
             let mut det = self.gpu.name.split("  (").next().unwrap_or("").to_string();
             if let Some(t) = self.gpu.sens.temp {
@@ -292,8 +307,8 @@ impl App {
     // ───────────── processos ─────────────
     pub fn refresh_procs(&mut self) {
         let keep = self.cursor_pid();
-        self.procs.update(self.mem.total);
-        self.procs_age = 0;
+        // sem CPU% novo (leitura colada na anterior): tenta de novo no próximo segundo
+        self.procs_age = if self.procs.update(self.mem.total) { 0 } else { 2 };
         self.rebuild_view(keep);
     }
 
@@ -356,6 +371,9 @@ impl App {
                 self.gpu.read_sensors(false, true);
                 self.build_overview();
                 self.refresh_procs();
+                // essa leitura só serve de base (o CPU% de cada processo é a
+                // diferença entre duas): a próxima vem daqui a 1 s, não 3 s
+                self.procs_age = 2;
             }
             Tab::Gpu => self.gpu.read_sensors(true, true),
             Tab::Cpu => self.cpu_temp.sample(),
@@ -410,21 +428,10 @@ impl App {
             }
             v
         };
-        // degrau atual = o mais próximo do valor que o processo tem
-        let idx = (0..NIVEIS.len()).min_by_key(|k| (NIVEIS[*k].0 - atual).abs()).unwrap() as isize;
-        let n = NIVEIS.len() as isize;
-        let mut novo_idx = idx + passo;
-        if !(0..n).contains(&novo_idx) {
+        let Some((novo, nome_nivel)) = proximo_nivel(atual, passo) else {
             self.notify(format!("{} já está na prioridade {}", name, nivel_nome(atual).to_lowercase()), Sev::Info);
             return;
-        }
-        if NIVEIS[novo_idx as usize].0 == atual {
-            novo_idx += passo;
-            if !(0..n).contains(&novo_idx) {
-                return;
-            }
-        }
-        let (novo, nome_nivel) = NIVEIS[novo_idx as usize];
+        };
         let ok_msg = format!("{}: prioridade {}", name, nome_nivel.to_lowercase());
         // SAFETY: setpriority só recebe inteiros.
         let r = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, novo) };
@@ -457,10 +464,19 @@ impl App {
         if self.tab != Tab::Proc {
             return;
         }
-        if let Some(&i) = self.view.get(self.cursor) {
-            let p = &self.procs.list[i];
-            self.dialog = Some(Dialog { pid: p.pid, name: p.name.clone(), yes: true });
+        let Some(&i) = self.view.get(self.cursor) else { return };
+        let p = &self.procs.list[i];
+        let (pid, start, name) = (p.pid, p.start, p.name.clone());
+        // se falhar, ou o processo já saiu (a conferência abaixo avisa) ou o
+        // kernel não tem pidfd (aí confere de novo na hora de encerrar)
+        let pidfd = pidfd_open(pid).ok();
+        // a lista pode ter até 3 s: confere que o PID ainda é o mesmo processo
+        if procs::start_time(pid) != Some(start) {
+            self.notify(format!("{name} já tinha fechado"), Sev::Info);
+            self.refresh_procs();
+            return;
         }
+        self.dialog = Some(Dialog { pid, name, yes: true, pidfd, start });
     }
 
     fn dialog_done(&mut self, ok: bool) {
@@ -468,12 +484,22 @@ impl App {
         if !ok {
             return;
         }
-        // SAFETY: kill só recebe inteiros.
-        let r = unsafe { libc::kill(d.pid, libc::SIGTERM) };
-        if r == 0 {
-            self.notify(format!("{} ({}) encerrado", d.name, d.pid), Sev::Info);
-        } else if errno() == libc::EPERM {
-            self.notify(format!("Sem permissão para encerrar {} (é do sistema/root)", d.name), Sev::Error);
+        let r = match &d.pidfd {
+            Some(fd) => pidfd_kill(fd, libc::SIGTERM),
+            None if procs::start_time(d.pid) == Some(d.start) => {
+                // SAFETY: kill só recebe inteiros.
+                if unsafe { libc::kill(d.pid, libc::SIGTERM) } == 0 { Ok(()) } else { Err(errno()) }
+            }
+            None => Err(libc::ESRCH),
+        };
+        match r {
+            Ok(()) => self.notify(format!("{} ({}) encerrado", d.name, d.pid), Sev::Info),
+            Err(libc::EPERM) => self.notify(format!("Sem permissão para encerrar {} (é do sistema/root)", d.name), Sev::Error),
+            Err(libc::ESRCH) => self.notify(format!("{} já tinha fechado", d.name), Sev::Info),
+            Err(e) => {
+                let err = std::io::Error::from_raw_os_error(e);
+                self.notify(format!("Não consegui encerrar {}: {err}", d.name), Sev::Error);
+            }
         }
         self.refresh_procs();
     }
@@ -619,4 +645,29 @@ fn push(h: &mut VecDeque<f64>, v: f64) {
         h.pop_front();
     }
     h.push_back(v.clamp(0.0, 100.0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nivel_nome_arredonda_para_o_degrau_de_baixo() {
+        assert_eq!(nivel_nome(0), "Normal");
+        assert_eq!(nivel_nome(5), "Normal");
+        assert_eq!(nivel_nome(19), "Baixa");
+        assert_eq!(nivel_nome(-3), "Acima do normal");
+        assert_eq!(nivel_nome(-20), "Muito alta");
+    }
+
+    #[test]
+    fn proximo_nivel_sobe_e_desce_um_degrau() {
+        assert_eq!(proximo_nivel(0, 1), Some((-5, "Acima do normal")));
+        assert_eq!(proximo_nivel(0, -1), Some((10, "Abaixo do normal")));
+        // valor fora da escada: parte do degrau mais próximo
+        assert_eq!(proximo_nivel(-4, 1), Some((-10, "Alta")));
+        assert_eq!(proximo_nivel(18, -1), None);
+        assert_eq!(proximo_nivel(-15, 1), None);
+        assert_eq!(proximo_nivel(-20, 1), None);
+    }
 }

@@ -7,23 +7,29 @@ mod collect;
 mod ui;
 mod util;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::{App, Tab};
 use crossterm::event::{self, Event, KeyEventKind};
 use std::io::Write;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 // Só cliques e rodinha (sem movimento do mouse, que acordaria o programa à toa).
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--ram") {
-        return ram_cmd();
+        // erro numa linha só, em português ("não consegui gravar X: Permission denied")
+        return Ok(ram_cmd().unwrap_or_else(|e| {
+            eprintln!("{e:#}");
+            ExitCode::FAILURE
+        }));
     }
     if let Some(i) = args.iter().position(|a| a == "--dump") {
-        return dump(args.get(i + 1).map(String::as_str).unwrap_or("120x40"));
+        dump(args.get(i + 1).map_or("120x40", String::as_str))?;
+        return Ok(ExitCode::SUCCESS);
     }
     let mut app = App::new();
     let mut term = ratatui::init();
@@ -37,7 +43,7 @@ fn main() -> Result<()> {
     let res = main_loop(&mut term, &mut app);
     print!("{MOUSE_OFF}");
     ratatui::restore();
-    res
+    res.map(|()| ExitCode::SUCCESS)
 }
 
 fn main_loop(term: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
@@ -93,7 +99,7 @@ fn main_loop(term: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
 }
 
 /// `aerotop --ram`: guarda a saída do dmidecode (precisa de senha) em cache.
-fn ram_cmd() -> Result<()> {
+fn ram_cmd() -> Result<ExitCode> {
     // o dmidecode fica em /usr/sbin, que não está no PATH de usuário comum no
     // Debian; o pkexec procura no PATH de quem chamou, então vai o caminho inteiro
     let dmi = ["/usr/sbin/dmidecode", "/sbin/dmidecode", "/usr/bin/dmidecode", "/bin/dmidecode"]
@@ -102,44 +108,58 @@ fn ram_cmd() -> Result<()> {
         .unwrap_or("dmidecode");
     // SAFETY: geteuid não tem pré-condições.
     let root = unsafe { libc::geteuid() } == 0;
-    // rodando como root (pkexec/sudo na frente): salva na pasta de quem chamou
+    // rodando como root (pkexec/sudo na frente): o cache vai para quem chamou
     let owner = ["PKEXEC_UID", "SUDO_UID"]
         .iter()
         .filter(|_| root)
-        .find_map(|v| std::env::var(v).ok()?.parse::<u32>().ok());
-    let home = match owner.and_then(user_home) {
-        Some((h, _)) => h,
-        None => std::env::var("HOME").unwrap_or_default(),
-    };
+        .find_map(|v| std::env::var(v).ok()?.parse::<u32>().ok())
+        .and_then(|uid| user_home(uid).map(|(home, gid)| (uid, gid, home)));
     let out = if root {
         std::process::Command::new(dmi).args(["-t", "memory"]).output()
     } else {
         std::process::Command::new("pkexec").args([dmi, "-t", "memory"]).output()
     };
-    match out {
-        Ok(o) if o.status.success() => {
-            let dir = format!("{home}/.cache/aerotop");
-            std::fs::create_dir_all(&dir)?;
-            let file = format!("{dir}/dmidecode-memory.txt");
-            std::fs::write(&file, &o.stdout)?;
-            if let Some((_, gid)) = owner.and_then(user_home) {
-                for p in [format!("{home}/.cache"), dir, file] {
-                    let _ = std::os::unix::fs::chown(&p, owner, Some(gid));
-                }
-            }
-            let mut mem = collect::sys::Mem::default();
-            mem.sample();
-            println!("RAM: {}", collect::sys::ram_info_from(&home, mem.total));
-        }
+    let falha = |msg: String| {
+        eprintln!("{msg}");
+        Ok(ExitCode::FAILURE)
+    };
+    let o = match out {
+        Ok(o) if o.status.success() => o,
         // 126/127: o pkexec não autorizou (janela fechada ou senha errada)
-        Ok(o) if !root && matches!(o.status.code(), Some(126 | 127)) => println!("Não consegui ler: a senha foi cancelada ou recusada."),
+        Ok(o) if !root && matches!(o.status.code(), Some(126 | 127)) => {
+            return falha("Não consegui ler: a senha foi cancelada ou recusada.".into());
+        }
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            println!("Não consegui ler a memória com o {dmi}: {}", err.trim());
+            return falha(format!("Não consegui ler a memória com o {dmi}: {}", err.trim()));
         }
-        Err(e) => println!("Não consegui rodar o {}: {e}", if root { dmi } else { "pkexec" }),
-    }
-    Ok(())
+        Err(e) => return falha(format!("Não consegui rodar o {}: {e}", if root { dmi } else { "pkexec" })),
+    };
+    // a parte que precisa de root acabou: volta a ser o usuário antes de
+    // mexer na pasta dele (assim nada é criado como root nem segue atalhos como root)
+    let home = match owner {
+        Some((uid, gid, home)) => {
+            drop_to(uid, gid).context("não consegui voltar a ser o usuário que chamou")?;
+            home
+        }
+        None => std::env::var("HOME").unwrap_or_default(),
+    };
+    let dir = format!("{home}/.cache/aerotop");
+    std::fs::create_dir_all(&dir).with_context(|| format!("não consegui criar {dir}"))?;
+    let file = format!("{dir}/dmidecode-memory.txt");
+    std::fs::write(&file, &o.stdout).with_context(|| format!("não consegui gravar {file}"))?;
+    let mut mem = collect::sys::Mem::default();
+    mem.sample();
+    println!("RAM: {}", collect::sys::ram_info_from(&home, mem.total));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Deixa de ser root de vez e vira o usuário `uid` (grupo principal `gid`).
+fn drop_to(uid: u32, gid: u32) -> std::io::Result<()> {
+    // SAFETY: chamadas simples da libc. A ordem importa: grupos e gid antes do
+    // uid, porque depois do setuid não há mais permissão para trocá-los.
+    let ok = unsafe { libc::setgroups(1, &gid) == 0 && libc::setgid(gid) == 0 && libc::setuid(uid) == 0 };
+    if ok { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 /// (pasta pessoal, grupo) de um usuário, pelo /etc/passwd
