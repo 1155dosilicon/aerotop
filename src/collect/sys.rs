@@ -296,7 +296,7 @@ fn ram_info_text(txt: &str, total_bytes: u64) -> String {
         Some(format!("{} {}", &v[..nd], unit))
     }
 
-    let (mut tipo, mut conf, mut speed, mut sticks) = (None, None, None, 0);
+    let (mut tipo, mut conf, mut speed, mut sticks, mut soma) = (None, None, None, 0, 0u64);
     for line in txt.lines() {
         let l = line.trim_start();
         if let Some(v) = l.strip_prefix("Type:") {
@@ -316,10 +316,19 @@ fn ram_info_text(txt: &str, total_bytes: u64) -> String {
             let v = v.trim_start();
             let nd = v.bytes().take_while(u8::is_ascii_digit).count();
             let u = v[nd..].trim_start();
+            let n: u64 = v[..nd].parse().unwrap_or(0);
             if nd > 0 && (u.starts_with("GB") || u.starts_with("MB")) {
                 sticks += 1;
+                soma += if u.starts_with("GB") { n << 30 } else { n << 20 };
             }
         }
+    }
+    // o cache é de outra configuração de pentes (trocou, tirou ou pôs memória):
+    // o kernel nunca vê mais que o instalado, e vê só um pouco menos (reservas
+    // do firmware/vídeo), então soma menor que o total ou bem maior é cache velho
+    if sticks > 0 && (soma < total_bytes || total_bytes.saturating_mul(100) < soma.saturating_mul(85)) {
+        parts.push("pentes mudaram: rode  aerotop --ram".to_string());
+        return parts.join("  ·  ");
     }
     let speed = conf.or(speed);
     if tipo.is_some() || speed.is_some() {
@@ -602,6 +611,17 @@ mod tests {
     fn ram_info_prefere_a_velocidade_configurada_e_conta_pentes() {
         assert_eq!(ram_info_text(DMI, 8 << 30), "8192 MB  ·  DDR3 1333 MT/s  ·  2 pentes");
         assert_eq!(ram_info_text("\tSize: 8 GB\n\tType: DDR4\n\tSpeed: 2400 MHz\n", 8 << 30), "8192 MB  ·  DDR4 2400 MHz  ·  1 pente");
+    }
+
+    #[test]
+    fn ram_info_percebe_cache_de_outros_pentes() {
+        // cache de 2×4 GB, mas o kernel vê 11,6 GiB (pôs mais um pente)
+        let total = 11_900u64 << 20;
+        assert_eq!(ram_info_text(DMI, total), "11900 MB  ·  pentes mudaram: rode  aerotop --ram");
+        // tirou um pente: cache diz 8 GB, kernel vê 3,8 GiB
+        assert_eq!(ram_info_text(DMI, 3_900 << 20), "3900 MB  ·  pentes mudaram: rode  aerotop --ram");
+        // 8 GB instalados, kernel vê 7,7 GiB (reservas): cache continua valendo
+        assert_eq!(ram_info_text(DMI, 7_885 << 20), "7885 MB  ·  DDR3 1333 MT/s  ·  2 pentes");
     }
 
     #[test]
