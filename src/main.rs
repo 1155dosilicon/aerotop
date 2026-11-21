@@ -108,12 +108,8 @@ fn ram_cmd() -> Result<ExitCode> {
         .unwrap_or("dmidecode");
     // SAFETY: geteuid não tem pré-condições.
     let root = unsafe { libc::geteuid() } == 0;
-    // rodando como root (pkexec/sudo na frente): o cache vai para quem chamou
-    let owner = ["PKEXEC_UID", "SUDO_UID"]
-        .iter()
-        .filter(|_| root)
-        .find_map(|v| std::env::var(v).ok()?.parse::<u32>().ok())
-        .and_then(|uid| user_home(uid).map(|(home, gid)| (uid, gid, home)));
+    // decide antes de pedir a senha: se não der para saber onde gravar, nem pede
+    let dest = cache_dest(root, |v| std::env::var(v).ok(), user_home)?;
     let out = if root {
         std::process::Command::new(dmi).args(["-t", "memory"]).output()
     } else {
@@ -137,12 +133,12 @@ fn ram_cmd() -> Result<ExitCode> {
     };
     // a parte que precisa de root acabou: volta a ser o usuário antes de
     // mexer na pasta dele (assim nada é criado como root nem segue atalhos como root)
-    let home = match owner {
-        Some((uid, gid, home)) => {
+    let home = match dest {
+        CacheDest::Caller { uid, gid, home } => {
             drop_to(uid, gid).context("não consegui voltar a ser o usuário que chamou")?;
             home
         }
-        None => std::env::var("HOME").unwrap_or_default(),
+        CacheDest::Me { home } => home,
     };
     let dir = format!("{home}/.cache/aerotop");
     std::fs::create_dir_all(&dir).with_context(|| format!("não consegui criar {dir}"))?;
@@ -152,6 +148,32 @@ fn ram_cmd() -> Result<ExitCode> {
     mem.sample();
     println!("RAM: {}", collect::sys::ram_info_from(&home, mem.total));
     Ok(ExitCode::SUCCESS)
+}
+
+/// Em nome de quem e em que pasta pessoal o `--ram` grava o cache.
+#[derive(Debug, PartialEq, Eq)]
+enum CacheDest {
+    /// root a pedido de outro usuário (pkexec/sudo): volta a ser ele antes de gravar
+    Caller { uid: u32, gid: u32, home: String },
+    /// o próprio usuário (ou root de verdade, sem ninguém por trás)
+    Me { home: String },
+}
+
+/// Decide o [`CacheDest`]. `var` lê variáveis de ambiente e `lookup` acha
+/// (pasta pessoal, grupo) de um uid; ficam de fora para os testes.
+fn cache_dest(root: bool, var: impl Fn(&str) -> Option<String>, lookup: impl Fn(u32) -> Option<(String, u32)>) -> Result<CacheDest> {
+    // rodando como root (pkexec/sudo na frente): o cache vai para quem chamou
+    let caller = if root { ["PKEXEC_UID", "SUDO_UID"].into_iter().find_map(|v| var(v)?.parse::<u32>().ok()) } else { None };
+    if let Some(uid) = caller {
+        // sem achar o usuário não dá para largar o root: gravar como root no
+        // $HOME (que com sudo pode ser a pasta dele) é justamente o que se evita
+        let (home, gid) = lookup(uid).with_context(|| format!("não achei a pasta pessoal do usuário {uid}"))?;
+        return Ok(CacheDest::Caller { uid, gid, home });
+    }
+    match var("HOME").filter(|h| !h.is_empty()) {
+        Some(home) => Ok(CacheDest::Me { home }),
+        None => anyhow::bail!("não sei onde gravar o cache: HOME não está definido"),
+    }
 }
 
 /// Deixa de ser root de vez e vira o usuário `uid` (grupo principal `gid`).
@@ -199,4 +221,47 @@ fn dump(size: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        |k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+    }
+
+    fn eli(uid: u32) -> Option<(String, u32)> {
+        (uid == 1000).then(|| ("/home/eli".to_string(), 1000))
+    }
+
+    #[test]
+    fn cache_dest_como_root_vai_para_quem_chamou() {
+        let vars = [("PKEXEC_UID", "1000"), ("HOME", "/root")];
+        assert_eq!(cache_dest(true, env(&vars), eli).unwrap(), CacheDest::Caller { uid: 1000, gid: 1000, home: "/home/eli".into() });
+        let sudo = [("SUDO_UID", "1000"), ("HOME", "/home/eli")];
+        assert_eq!(cache_dest(true, env(&sudo), eli).unwrap(), CacheDest::Caller { uid: 1000, gid: 1000, home: "/home/eli".into() });
+    }
+
+    #[test]
+    fn cache_dest_nao_grava_como_root_se_nao_acha_o_usuario() {
+        // antes caía no $HOME ainda como root (com sudo, a pasta do próprio usuário)
+        let vars = [("SUDO_UID", "1234"), ("HOME", "/home/eli")];
+        let err = cache_dest(true, env(&vars), eli).unwrap_err();
+        assert_eq!(err.to_string(), "não achei a pasta pessoal do usuário 1234");
+    }
+
+    #[test]
+    fn cache_dest_sem_root_usa_o_home_e_ignora_as_variaveis_do_sudo() {
+        let vars = [("SUDO_UID", "1234"), ("HOME", "/home/eli")];
+        assert_eq!(cache_dest(false, env(&vars), eli).unwrap(), CacheDest::Me { home: "/home/eli".into() });
+        // root de verdade, sem pkexec/sudo
+        assert_eq!(cache_dest(true, env(&[("HOME", "/root")]), eli).unwrap(), CacheDest::Me { home: "/root".into() });
+    }
+
+    #[test]
+    fn cache_dest_sem_home_da_erro_em_vez_de_gravar_na_raiz() {
+        assert!(cache_dest(false, env(&[]), eli).is_err());
+        assert!(cache_dest(false, env(&[("HOME", "")]), eli).is_err());
+    }
 }
