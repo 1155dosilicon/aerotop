@@ -407,15 +407,25 @@ impl App {
             return;
         }
         let Some(&i) = self.view.get(self.cursor) else { return };
-        let (pid, name) = (self.procs.list[i].pid, self.procs.list[i].name.clone());
+        let p = &self.procs.list[i];
+        let (pid, start, name) = (p.pid, p.start, p.name.clone());
+        // a lista pode ter até 3 s: se o PID já é de outro processo, a
+        // prioridade iria para ele (com o pkexec, até para um processo do root)
+        if !procs::is_same(pid, start) {
+            self.notify(format!("{name} já tinha fechado"), Sev::Info);
+            self.refresh_procs();
+            return;
+        }
         // SAFETY: chamadas simples da libc; errno é zerado antes porque -1 é um valor válido.
         let atual = unsafe {
             *libc::__errno_location() = 0;
             let v = libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t);
-            if v == -1 && errno() != 0 {
-                return;
-            }
-            v
+            let e = errno();
+            if v == -1 && e != 0 { Err(e) } else { Ok(v) }
+        };
+        let atual = match atual {
+            Ok(v) => v,
+            Err(e) => return self.prioridade_falhou(&name, e),
         };
         let Some((novo, nome_nivel)) = proximo_nivel(atual, passo) else {
             self.notify(format!("{} já está na prioridade {}", name, nivel_nome(atual).to_lowercase()), Sev::Info);
@@ -431,7 +441,7 @@ impl App {
         }
         match errno() {
             libc::EPERM | libc::EACCES => {}
-            _ => return,
+            e => return self.prioridade_falhou(&name, e),
         }
         // O sistema negou: pede a senha pelo pkexec, numa thread, sem travar a tela
         self.notify("Subir prioridade pede a senha…", Sev::Info);
@@ -442,11 +452,28 @@ impl App {
                 .args(["renice", "-n", &novo.to_string(), "-p", &pid.to_string()])
                 .stdin(std::process::Stdio::null())
                 .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            let msg = if ok { (ok_msg, Sev::Info) } else { ("Prioridade não mudou (senha cancelada?)".to_string(), Sev::Warn) };
+                .is_ok_and(|o| o.status.success());
+            let msg = if !ok {
+                ("Prioridade não mudou (senha cancelada?)".to_string(), Sev::Warn)
+            } else if procs::is_same(pid, start) {
+                (ok_msg, Sev::Info)
+            } else {
+                // a janela de senha pode ficar aberta um bom tempo e o renice não
+                // aceita pidfd: se o PID trocou de dono nesse meio-tempo, ao menos avisa
+                (format!("{name} fechou durante a senha; o PID {pid} agora pode ser outro processo"), Sev::Warn)
+            };
             let _ = tx.send(msg);
         });
+    }
+
+    fn prioridade_falhou(&mut self, name: &str, e: i32) {
+        if e == libc::ESRCH {
+            self.notify(format!("{name} já tinha fechado"), Sev::Info);
+            self.refresh_procs();
+        } else {
+            let err = std::io::Error::from_raw_os_error(e);
+            self.notify(format!("Não consegui mudar a prioridade de {name}: {err}"), Sev::Error);
+        }
     }
 
     fn encerrar(&mut self) {
@@ -460,7 +487,7 @@ impl App {
         // kernel não tem pidfd (aí confere de novo na hora de encerrar)
         let pidfd = pidfd_open(pid).ok();
         // a lista pode ter até 3 s: confere que o PID ainda é o mesmo processo
-        if procs::start_time(pid) != Some(start) {
+        if !procs::is_same(pid, start) {
             self.notify(format!("{name} já tinha fechado"), Sev::Info);
             self.refresh_procs();
             return;
@@ -475,7 +502,7 @@ impl App {
         }
         let r = match &d.pidfd {
             Some(fd) => pidfd_kill(fd, libc::SIGTERM),
-            None if procs::start_time(d.pid) == Some(d.start) => {
+            None if procs::is_same(d.pid, d.start) => {
                 // SAFETY: kill só recebe inteiros.
                 if unsafe { libc::kill(d.pid, libc::SIGTERM) } == 0 { Ok(()) } else { Err(errno()) }
             }

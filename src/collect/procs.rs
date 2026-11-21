@@ -91,6 +91,12 @@ pub fn start_time(pid: i32) -> Option<u64> {
     parse_stat(&buf).map(|s| s.start)
 }
 
+/// O `pid` ainda é o processo que nasceu em `start`, e não outro que
+/// reaproveitou o número (ou nenhum, se já saiu)?
+pub fn is_same(pid: i32, start: u64) -> bool {
+    start_time(pid) == Some(start)
+}
+
 /// Uso de CPU em % de um núcleo: `ticks` de CPU gastos em `dt` segundos.
 fn cpu_pct(ticks: u64, dt: f64, clk: f64) -> f64 {
     if dt > 0.0 { round1(ticks as f64 / (dt * clk) * 100.0) } else { 0.0 }
@@ -309,6 +315,19 @@ mod tests {
         assert_eq!(cpu_pct(100, 1.0, 100.0), 100.0);
         assert_eq!(cpu_pct(25, 2.0, 100.0), 12.5);
         assert_eq!(cpu_pct(25, 0.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn is_same_reconhece_o_processo_pelo_inicio() {
+        let mut filho = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = filho.id() as i32;
+        let start = start_time(pid).unwrap();
+        assert!(is_same(pid, start));
+        // mesmo PID, outro nascimento = outro processo
+        assert!(!is_same(pid, start + 1));
+        filho.kill().unwrap();
+        filho.wait().unwrap();
+        assert!(!is_same(pid, start));
     }
 
     #[test]
