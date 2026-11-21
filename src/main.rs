@@ -33,14 +33,15 @@ fn main() -> Result<ExitCode> {
     }
     let mut app = App::new();
     let mut term = ratatui::init();
-    print!("{MOUSE_ON}");
-    std::io::stdout().flush()?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         print!("{MOUSE_OFF}");
         hook(info);
     }));
-    let res = main_loop(&mut term, &mut app);
+    // daqui até o restore nada pode sair com `?` direto: o terminal ficaria
+    // em modo raw e na tela alternativa
+    print!("{MOUSE_ON}");
+    let res = std::io::stdout().flush().map_err(anyhow::Error::from).and_then(|()| main_loop(&mut term, &mut app));
     print!("{MOUSE_OFF}");
     ratatui::restore();
     res.map(|()| ExitCode::SUCCESS)
