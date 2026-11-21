@@ -183,24 +183,25 @@ pub fn wrap(s: &str, w: i32) -> Vec<String> {
     if width(s) <= w || w <= 0 {
         return vec![s.to_string()];
     }
-    let mut lines = vec![String::new()];
+    let mut lines = Vec::new();
+    let mut cur = String::new();
     let mut rest = s;
     while !rest.is_empty() {
         // próximo pedaço = espaços + palavra
         let sp = rest.len() - rest.trim_start_matches(' ').len();
-        let end = rest[sp..].find(' ').map(|i| sp + i).unwrap_or(rest.len());
+        let end = rest[sp..].find(' ').map_or(rest.len(), |i| sp + i);
         let (gap, word) = (&rest[..sp], &rest[sp..end]);
         rest = &rest[end..];
-        let cur = lines.last_mut().unwrap();
         if cur.is_empty() {
             cur.push_str(word);
-        } else if width(cur) + width(gap) + width(word) <= w {
+        } else if width(&cur) + width(gap) + width(word) <= w {
             cur.push_str(gap);
             cur.push_str(word);
         } else if !word.is_empty() {
-            lines.push(word.to_string());
+            lines.push(std::mem::replace(&mut cur, word.to_string()));
         }
     }
+    lines.push(cur);
     lines
 }
 
