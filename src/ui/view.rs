@@ -2,7 +2,7 @@
 use crate::app::{App, Sev, Tab, nivel_nome};
 use crate::collect::procs::Rank;
 use crate::ui::bigfont::{big, title};
-use crate::ui::draw::{Cv, R, bold, fg, graph, meter, width, wrap};
+use crate::ui::draw::{Cv, R, bold, fg, graph, meter, width, wrap, wrap_parts};
 use crate::ui::theme::*;
 use crate::util::{br, center, fmt_bytes, fmt_uptime, pyround};
 use ratatui::Frame;
@@ -256,11 +256,13 @@ fn tab_gpu(cv: &mut Cv, app: &App, r: R) {
     if let Some(c) = s.cap.filter(|c| *c != 0) {
         pw.push_str(&format!(" (limite {} W)", pyround(c as f64 / 1e6)));
     }
-    let vram_txt = vram.map(|(u, t)| format!("   ·   VRAM {} de {} MB", mib(u), mib(t))).unwrap_or_default();
+    let fan_pw = format!("{fan}  /  {pw}");
+    let vram_txt = vram.map(|(u, t)| format!("VRAM {} de {} MB", mib(u), mib(t)));
+    let fan_parts: Vec<&str> = std::iter::once(fan_pw.as_str()).chain(vram_txt.as_deref()).collect();
     let info = [
         ("Nome", wrap(&app.gpu.name, cw)),
         ("Clock GPU / Memória", wrap(&clk, cx[2] - cx[1])),
-        ("Ventoinha / Consumo", wrap(&format!("{fan}  /  {pw}{vram_txt}"), last_w)),
+        ("Ventoinha / Consumo", wrap_parts(&fan_parts, "   ·   ", last_w)),
     ];
     let info_h = 1 + info.iter().map(|(_, l)| l.len() as i32).max().unwrap_or(1);
 
@@ -358,7 +360,8 @@ fn tab_proc(cv: &mut Cv, app: &mut App, r: R) {
     // ── campo de busca ──
     if app.filter_open {
         let fr = R::new(r.x, y, r.w, 3);
-        cv.fill(fr, INPUT_BG);
+        // fundo igual ao da página: um fundo próprio sobraria em volta da borda
+        cv.fill(fr, BG);
         cv.frame(fr, if app.filter_focus { ACCENT } else { METER_BORDER });
         let mut icv = cv.clipped(R::new(fr.x + 2, y + 1, fr.w - 4, 1));
         let mut cx = fr.x + 2;

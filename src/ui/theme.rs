@@ -5,7 +5,9 @@ pub const fn rgb(h: u32) -> Color {
     Color::Rgb((h >> 16) as u8, (h >> 8) as u8, h as u8)
 }
 
-pub const BG: Color = rgb(0x0a0f1a);
+/// fundo da página, também usado para pintar a margem do terminal (OSC 11)
+pub const BG_HEX: u32 = 0x0a0f1a;
+pub const BG: Color = rgb(BG_HEX);
 pub const BAR_BG: Color = rgb(0x0f1a2b);
 pub const TAB_OFF: Color = rgb(0x8fb8d8);
 pub const TAB_ON: Color = rgb(0xe8f6ff);
@@ -24,7 +26,6 @@ pub const RAM_BORDER: Color = rgb(0x3f6a4a);
 pub const ZRAM_LIT: Color = rgb(0x5ec8ff);
 pub const ZRAM_OFF: Color = rgb(0x0b2b3d);
 pub const ZRAM_BORDER: Color = rgb(0x2e5a7a);
-pub const BLACK: Color = rgb(0x000000);
 
 pub const GPU_CARD_BG: Color = rgb(0x16141f);
 pub const GPU_BORDER: Color = rgb(0x3d3452);

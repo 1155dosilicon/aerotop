@@ -121,7 +121,8 @@ impl Cv<'_> {
 /// Medidor vertical de barrinhas (Gerenciador de Tarefas do Windows 7).
 #[allow(clippy::too_many_arguments)]
 pub fn meter(cv: &mut Cv, r: R, value: f64, caption: &str, name: &str, lit: Color, off: Color, border: Color) {
-    cv.fill(r, BLACK);
+    // sem fundo próprio: a borda arredondada passa no meio da célula, e um fundo
+    // diferente do da página sobraria como uma moldura em volta dela
     cv.frame(r, border);
     let inner = r.shrink(1, 1);
     let mut cv = cv.clipped(inner);
@@ -205,6 +206,29 @@ pub fn wrap(s: &str, w: i32) -> Vec<String> {
     lines
 }
 
+/// Junta pedaços com `sep` enquanto couberem na largura; quando não cabem,
+/// o pedaço vai para a linha seguinte sem o separador (que ficaria pendurado
+/// no fim da linha). Pedaço maior que a largura é quebrado por palavra.
+pub fn wrap_parts(parts: &[&str], sep: &str, w: i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for part in parts {
+        if cur.is_empty() {
+        } else if width(&cur) + width(sep) + width(part) <= w {
+            cur.push_str(sep);
+            cur.push_str(part);
+            continue;
+        } else {
+            lines.push(std::mem::take(&mut cur));
+        }
+        let mut pl = wrap(part, w);
+        cur = pl.pop().unwrap_or_default();
+        lines.extend(pl);
+    }
+    lines.push(cur);
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +250,19 @@ mod tests {
         assert_eq!(wrap("curto", 20), ["curto"]);
         // palavra maior que a largura fica inteira (o desenho corta depois)
         assert_eq!(wrap("a palavragrande b", 5), ["a", "palavragrande", "b"]);
+    }
+
+    #[test]
+    fn wrap_parts_nao_deixa_o_separador_pendurado() {
+        let parts = ["2152 RPM  /  4,1 W (limite 30 W)", "VRAM 172 de 2048 MB"];
+        // antes: "2152 RPM  /  4,1 W (limite 30 W)   ·" e "VRAM 172 de 2048 MB"
+        assert_eq!(wrap_parts(&parts, "   ·   ", 40), ["2152 RPM  /  4,1 W (limite 30 W)", "VRAM 172 de 2048 MB"]);
+        assert_eq!(wrap_parts(&parts, "   ·   ", 80), ["2152 RPM  /  4,1 W (limite 30 W)   ·   VRAM 172 de 2048 MB"]);
+        // pedaço maior que a largura ainda quebra por palavra
+        assert_eq!(wrap_parts(&["aa bb cc", "dd"], " · ", 5), ["aa bb", "cc", "dd"]);
+        // e o próximo pedaço continua na última linha dele, se couber
+        assert_eq!(wrap_parts(&["aa bb cc", "dd"], " · ", 7), ["aa bb", "cc · dd"]);
+        assert_eq!(wrap_parts(&[], " · ", 5), [""]);
     }
 
     #[test]

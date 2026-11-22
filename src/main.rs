@@ -17,6 +17,29 @@ use std::time::{Duration, Instant};
 // Só cliques e rodinha (sem movimento do mouse, que acordaria o programa à toa).
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+/// Volta o fundo do terminal para a cor do tema dele (OSC 111).
+const BG_RESET: &str = "\x1b]111\x1b\\";
+
+/// Pinta o fundo do terminal com o do AeroTop (OSC 11): a margem do terminal
+/// (o `window_padding` do kitty, a sobra de pixels) fica fora das células e
+/// mostraria a cor do tema em volta da tela. Só nos terminais que sabidamente
+/// voltam a cor com o OSC 111; nos outros, a cor ficaria trocada depois de sair.
+/// Dentro do tmux/screen não: ele não repassa a sequência para o terminal de fora.
+fn bg_osc(env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let set = |k: &str| env(k).is_some_and(|v| !v.is_empty());
+    let term = env("TERM").unwrap_or_default();
+    if set("TMUX") || set("STY") || term.starts_with("screen") || term.starts_with("tmux") {
+        return None;
+    }
+    let prog = env("TERM_PROGRAM").unwrap_or_default();
+    let ok = set("KITTY_WINDOW_ID")
+        || set("ALACRITTY_WINDOW_ID")
+        || set("WEZTERM_PANE")
+        || set("GHOSTTY_RESOURCES_DIR")
+        || matches!(term.as_str(), "xterm-kitty" | "alacritty" | "foot" | "foot-extra" | "xterm-ghostty" | "wezterm")
+        || matches!(prog.as_str(), "WezTerm" | "ghostty");
+    ok.then(|| format!("\x1b]11;#{:06x}\x1b\\", ui::theme::BG_HEX))
+}
 
 fn main() -> Result<ExitCode> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,17 +55,19 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let mut app = App::new();
+    let bg = bg_osc(|k| std::env::var(k).ok());
+    let reset = if bg.is_some() { BG_RESET } else { "" };
     let mut term = ratatui::init();
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        print!("{MOUSE_OFF}");
+        print!("{MOUSE_OFF}{reset}");
         hook(info);
     }));
     // daqui até o restore nada pode sair com `?` direto: o terminal ficaria
     // em modo raw e na tela alternativa
-    print!("{MOUSE_ON}");
+    print!("{MOUSE_ON}{}", bg.as_deref().unwrap_or(""));
     let res = std::io::stdout().flush().map_err(anyhow::Error::from).and_then(|()| main_loop(&mut term, &mut app));
-    print!("{MOUSE_OFF}");
+    print!("{MOUSE_OFF}{reset}");
     ratatui::restore();
     res.map(|()| ExitCode::SUCCESS)
 }
@@ -234,6 +259,19 @@ mod tests {
 
     fn eli(uid: u32) -> Option<(String, u32)> {
         (uid == 1000).then(|| ("/home/eli".to_string(), 1000))
+    }
+
+    #[test]
+    fn bg_osc_so_nos_terminais_que_voltam_a_cor() {
+        let osc = Some("\x1b]11;#0a0f1a\x1b\\".to_string());
+        assert_eq!(bg_osc(env(&[("TERM", "xterm-kitty"), ("KITTY_WINDOW_ID", "1")])), osc);
+        assert_eq!(bg_osc(env(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "WezTerm")])), osc);
+        // terminal desconhecido: a cor poderia ficar trocada depois de sair
+        assert_eq!(bg_osc(env(&[("TERM", "xterm-256color")])), None);
+        assert_eq!(bg_osc(env(&[])), None);
+        // kitty, mas dentro do tmux (as variáveis do kitty passam para dentro)
+        assert_eq!(bg_osc(env(&[("TERM", "tmux-256color"), ("KITTY_WINDOW_ID", "1"), ("TMUX", "/tmp/tmux-1000/default,1,0")])), None);
+        assert_eq!(bg_osc(env(&[("TERM", "screen"), ("KITTY_WINDOW_ID", "1")])), None);
     }
 
     #[test]
