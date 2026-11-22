@@ -4,7 +4,7 @@ use crate::collect::procs::Rank;
 use crate::ui::bigfont::{big, title};
 use crate::ui::draw::{Cv, R, bold, fg, graph, meter, width, wrap};
 use crate::ui::theme::*;
-use crate::util::{br, center, fmt_bytes, pyround};
+use crate::util::{br, center, fmt_bytes, fmt_uptime, pyround};
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -100,6 +100,39 @@ fn details(cv: &mut Cv, x: i32, y: i32, lines: &[DetLine]) -> i32 {
     x + w + 2
 }
 
+/// Verde abaixo de 70% dos núcleos ocupados, laranja até 100%, vermelho com fila.
+fn load_style(v: f64, ncpu: usize) -> Style {
+    let n = ncpu.max(1) as f64;
+    fg(if v >= n {
+        RED
+    } else if v >= 0.7 * n {
+        ORANGE
+    } else {
+        GREEN
+    })
+}
+
+/// Detalhes de carga média, threads e tempo ligado (vazio se o /proc não deu nada).
+fn load_lines(app: &App) -> Vec<DetLine> {
+    let l = &app.load;
+    let plain = fg(DET);
+    let mut v: Vec<DetLine> = Vec::new();
+    if let Some(a) = l.avg {
+        let ncpu = app.cpu.per.len();
+        v.push(("Carga média", String::new(), plain));
+        for (label, x) in ["  1 min  ", "  5 min  ", " 15 min  "].into_iter().zip(a) {
+            v.push((label, br(x, 2), load_style(x, ncpu)));
+        }
+        if l.threads > 0 {
+            v.push(("Threads  ", format!("{} de {}", l.running, l.threads), plain));
+        }
+    }
+    if let Some(u) = l.uptime {
+        v.push(("Ligado   ", fmt_uptime(u), plain));
+    }
+    v
+}
+
 fn tab_cpu(cv: &mut Cv, app: &App, r: R) {
     let mb = |x: u64| format!("{} MB", x >> 20);
     let temps = app.cpu_temp.ok();
@@ -115,15 +148,30 @@ fn tab_cpu(cv: &mut Cv, app: &App, r: R) {
         cv.put(r.x, y, &line, bold(TITLE));
         y += 1;
     }
-    let x = cv.put(r.x, y, &app.cpu_name, fg(SUB));
-    if let Some(t) = app.cpu_temp.pkg {
-        let x = cv.put(x, y, "  ·  ", fg(SUB2));
-        cv.put(x, y, &format!("{} °C", pyround(t as f64 / 1000.0)), bold(heat(t, app.cpu_temp.high)));
-    }
-    y += 2;
-
     let n = app.cpu.per.len().max(1) as i32;
     let mw = (r.w / n - 1).clamp(6, 11);
+    // carga média: ao lado dos medidores se couber, senão na linha do nome
+    let side = load_lines(app);
+    let side_x = r.x + n * (mw + 1);
+    let side_w = side.iter().map(|(l, v, _)| width(l) + width(v)).max().unwrap_or(0);
+    let beside = side_x + 2 + side_w <= r.right();
+
+    let mut x = cv.put(r.x, y, &app.cpu_name, fg(SUB));
+    if let Some(t) = app.cpu_temp.pkg {
+        x = cv.put(x, y, "  ·  ", fg(SUB2));
+        x = cv.put(x, y, &format!("{} °C", pyround(t as f64 / 1000.0)), bold(heat(t, app.cpu_temp.high)));
+    }
+    if !beside && let Some(a) = app.load.avg {
+        x = cv.put(x, y, "  ·  carga", fg(SUB2));
+        for v in a {
+            x = cv.put(x + 1, y, &br(v, 2), load_style(v, app.cpu.per.len()));
+        }
+    }
+    y += 2;
+    if beside {
+        details(cv, side_x, y, &side[..side.len().min(h1 as usize)]);
+    }
+
     for (i, v) in app.cpu.per.iter().enumerate() {
         let mr = R::new(r.x + i as i32 * (mw + 1), y, mw, mh);
         meter(cv, mr, *v, &format!("{} %", pyround(*v)), &format!("CPU {}", i + 1), METER_LIT, METER_OFF, METER_BORDER);

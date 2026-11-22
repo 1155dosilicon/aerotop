@@ -59,6 +59,56 @@ impl Cpu {
     }
 }
 
+// ───────────────────────────── carga média e tempo ligado ─────────────────────────────
+/// Carga média (/proc/loadavg) e tempo desde o boot (/proc/uptime).
+#[derive(Default)]
+pub struct Load {
+    /// médias de 1, 5 e 15 minutos
+    pub avg: Option<[f64; 3]>,
+    /// threads na fila para rodar agora e total de threads
+    pub running: u32,
+    pub threads: u32,
+    /// segundos desde o boot
+    pub uptime: Option<u64>,
+    buf: String,
+}
+
+impl Load {
+    pub fn sample(&mut self) {
+        let mut buf = std::mem::take(&mut self.buf);
+        if read_into("/proc/loadavg", &mut buf) {
+            self.update(&buf);
+        }
+        if read_into("/proc/uptime", &mut buf) {
+            self.uptime = uptime_secs(&buf);
+        }
+        self.buf = buf;
+    }
+
+    /// "0.52 0.61 0.70 2/1234 5678"
+    fn update(&mut self, loadavg: &str) {
+        let mut toks = loadavg.split_ascii_whitespace();
+        let mut avg = [0.0; 3];
+        for slot in &mut avg {
+            let Some(v) = toks.next().and_then(|t| t.parse().ok()) else {
+                self.avg = None;
+                return;
+            };
+            *slot = v;
+        }
+        self.avg = Some(avg);
+        let (r, t) = toks.next().and_then(|t| t.split_once('/')).unwrap_or_default();
+        self.running = r.parse().unwrap_or(0);
+        self.threads = t.parse().unwrap_or(0);
+    }
+}
+
+/// "12345.67 98765.43" → 12345 (o 1º campo é o tempo ligado; o 2º, ocioso somado de todas as CPUs).
+fn uptime_secs(txt: &str) -> Option<u64> {
+    let s: f64 = txt.split_ascii_whitespace().next()?.parse().ok()?;
+    (s.is_finite() && s >= 0.0).then_some(s as u64)
+}
+
 // ───────────────────────────── temperatura da CPU ─────────────────────────────
 /// Sensor de temperatura da CPU, achado no /sys/class/hwmon:
 /// `coretemp` (Intel, com pacote e núcleos), `k10temp`/`zenpower` (AMD),
@@ -587,6 +637,24 @@ mod tests {
         cpu.update("cpu0 10 0 0 0 90 0 0 0\ncpu2 0 0 0 100 0 0 0 0\n");
         assert_eq!(cpu.per, [10.0, 0.0]);
         assert_eq!(cpu.ids, [0, 2]);
+    }
+
+    #[test]
+    fn load_le_as_tres_medias_e_as_threads() {
+        let mut l = Load::default();
+        l.update("0.52 1.61 12.70 3/1234 5678\n");
+        assert_eq!(l.avg, Some([0.52, 1.61, 12.70]));
+        assert_eq!((l.running, l.threads), (3, 1234));
+        // conteúdo quebrado não deixa número velho na tela
+        l.update("0.52 abc\n");
+        assert_eq!(l.avg, None);
+    }
+
+    #[test]
+    fn uptime_pega_so_o_primeiro_campo() {
+        assert_eq!(uptime_secs("93784.91 701234.55\n"), Some(93784));
+        assert_eq!(uptime_secs(""), None);
+        assert_eq!(uptime_secs("-1 0"), None);
     }
 
     #[test]

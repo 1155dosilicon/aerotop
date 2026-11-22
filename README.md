@@ -20,7 +20,7 @@ CPU, memória, zram, GPU e processos numa tela só, gastando menos de 1,5% de um
 
 | Aba | Conteúdo |
 |---|---|
-| **1 · CPU e RAM** | Um medidor por núcleo no estilo do Windows 7, temperatura da CPU (geral e por núcleo), uso de RAM, cache, swap, tipo e velocidade dos pentes e o zram (quanto guarda, quanto ocupa e a taxa de compressão). |
+| **1 · CPU e RAM** | Um medidor por núcleo no estilo do Windows 7, temperatura da CPU (geral e por núcleo), carga média (1, 5 e 15 min), threads rodando, tempo ligado, uso de RAM, cache, swap, tipo e velocidade dos pentes e o zram (quanto guarda, quanto ocupa e a taxa de compressão). |
 | **2 · GPU** | Gráfico de uso em tempo real, VRAM, temperatura, clock da GPU e da memória, ventoinha e consumo em watts. Feito para placas **AMD** (driver `amdgpu`). |
 | **3 · Processos** | Resumo de CPU, rede, disco, memória, zram e GPU com status (ocioso, folgado, pesado), mais a lista de processos com bolinhas coloridas: 🟢 ativo · ⚪ segundo plano · 🔴 pesado. |
 

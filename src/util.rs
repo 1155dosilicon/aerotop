@@ -34,6 +34,18 @@ pub fn fmt_bytes(n: f64) -> String {
     format!("{} B", n as i64)
 }
 
+/// Tempo ligado curto: "3 d 4 h", "4 h 12 min", "12 min".
+pub fn fmt_uptime(secs: u64) -> String {
+    let (d, h, m) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60);
+    if d > 0 {
+        format!("{d} d {h} h")
+    } else if h > 0 {
+        format!("{h} h {m} min")
+    } else {
+        format!("{m} min")
+    }
+}
+
 /// Arredondamento igual ao `round()` do Python (meio vai para o par).
 pub fn pyround(x: f64) -> i64 {
     x.round_ties_even() as i64
@@ -97,6 +109,13 @@ mod tests {
         assert_eq!(fmt_bytes(1536.0), "1,5 KB");
         assert_eq!(fmt_bytes(5.0 * 1048576.0), "5,0 MB");
         assert_eq!(fmt_bytes(3.0 * 1073741824.0), "3,00 GB");
+    }
+
+    #[test]
+    fn fmt_uptime_mostra_as_duas_maiores_unidades() {
+        assert_eq!(fmt_uptime(59), "0 min");
+        assert_eq!(fmt_uptime(4 * 3600 + 12 * 60 + 30), "4 h 12 min");
+        assert_eq!(fmt_uptime(3 * 86_400 + 4 * 3600 + 59 * 60), "3 d 4 h");
     }
 
     #[test]

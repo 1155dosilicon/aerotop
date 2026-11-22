@@ -2,7 +2,7 @@
 use crate::collect::gpu::Gpu;
 use crate::collect::procs;
 use crate::collect::procs::Procs;
-use crate::collect::sys::{self, Cpu, CpuTemp, Disk, Mem, Net, Zram};
+use crate::collect::sys::{self, Cpu, CpuTemp, Disk, Load, Mem, Net, Zram};
 use crate::ui::draw::R;
 use crate::ui::theme::{GRAY, GREEN, RED};
 use crate::util::{br, errno, fmt_bytes, pidfd_kill, pidfd_open, pyround};
@@ -76,6 +76,7 @@ pub struct App {
     pub cpu: Cpu,
     pub cpu_temp: CpuTemp,
     pub cpu_name: String,
+    pub load: Load,
     pub mem: Mem,
     pub ram_info: String,
     pub zram: Zram,
@@ -123,6 +124,8 @@ impl App {
     pub fn new() -> Self {
         let mut cpu = Cpu::default();
         cpu.sample();
+        let mut load = Load::default();
+        load.sample();
         let mut mem = Mem::default();
         mem.sample();
         let zram = Zram::new();
@@ -137,6 +140,7 @@ impl App {
             cpu,
             cpu_temp: CpuTemp::new(),
             cpu_name: sys::cpu_name(),
+            load,
             mem,
             ram_info,
             zram,
@@ -175,6 +179,9 @@ impl App {
         self.cpu.sample();
         if self.tab != Tab::Gpu && self.cpu_temp.ok() {
             self.cpu_temp.sample();
+        }
+        if self.tab == Tab::Cpu {
+            self.load.sample();
         }
         self.mem.sample();
         if self.has_zram {
@@ -365,7 +372,10 @@ impl App {
                 self.procs_age = 2;
             }
             Tab::Gpu => self.gpu.read_sensors(true, true),
-            Tab::Cpu => self.cpu_temp.sample(),
+            Tab::Cpu => {
+                self.cpu_temp.sample();
+                self.load.sample();
+            }
         }
     }
 
